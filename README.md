@@ -18,12 +18,6 @@ Documentation can be found at `http://127.0.0.1:8000/docs` once you start the fa
 
 also compiled into `make quick-start`
 
-### Methodology changes
-
-both `simple-web-scraper` and `simple-sheets-put` required a docker compose file with multiple services.
-
-Daytona requires a single image and does not support compose. These services were compiled to support that.
-
 ### Testing
 
 Unit tests
@@ -33,3 +27,17 @@ Unit tests
 Integration tests
 
 `make test-integration`
+
+### Required Environment variables
+
+DAYTONA_API_KEY=...
+DAYTONA_API_URL=...
+DAYTONA_TARGET=...
+
+### Endpoints
+
+- `GET /health` - Health check endpoint
+- `GET /verify-task-ids` - Verify task IDs exist in SWE-bench benchmark
+- `GET /retrieve-tasks` - Get docker images and setup requirements for tasks
+- `POST /setup-task` - Run setup script for a task in a sandbox
+- `POST /evaluate-instance` - Execute tests and grade results for an instance

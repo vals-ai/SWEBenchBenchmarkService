@@ -35,7 +35,6 @@ indent-style = "space"
 [tool.basedpyright]
 venvPath=".venv"
 typeCheckingMode = "strict"
-ignore=["src/evaluation"]
 
 reportExplicitAny = false
 reportAny = false
