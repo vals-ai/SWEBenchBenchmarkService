@@ -58,6 +58,7 @@ def verify_task_ids(task_ids: list[str] = Query(..., description="List of task i
 @app.get("/retrieve-tasks")
 async def retrieve_tasks(
     task_ids: list[str] = Query(..., description="List of task ids to retrieve"),
+    skip_validation: bool = Query(False, description="Skip validation of the docker images"),
 ) -> dict[str, dict[str, Any]]:
     """
     Returns a mapping between task ids request and the docker images that are used to build the task environments.
@@ -66,7 +67,7 @@ async def retrieve_tasks(
     ghcr.io/epoch-research/swe-bench.eval.x86_64.{instance_id}:latest
 
     Usage
-    curl -X GET http://<endpoint>/retrieve-tasks/task_id_1,task_id_2,task_id_3
+    curl -X GET http://<endpoint>/retrieve-tasks?task_ids=task_id_1&task_ids=task_id_2&task_ids=task_id_3&skip_validation=true
     {
         "task_id_1": {
             "docker_image": "ghcr.io/e.../{instance_id}:latest",
@@ -88,7 +89,7 @@ async def retrieve_tasks(
 
     """
     try:
-        results = await asyncio.gather(*[fetch_docker_image(task_id) for task_id in task_ids])
+        results = await asyncio.gather(*[fetch_docker_image(task_id, skip_validation) for task_id in task_ids])
 
         return {
             task_id: {"docker_image": docker_image, "request_setup": request_setup}

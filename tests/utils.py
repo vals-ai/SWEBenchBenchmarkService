@@ -65,14 +65,16 @@ class BenchmarkServiceTestClient:
 
         return json.loads(response.result or "{}")
 
-    async def request_retrieve_tasks(self, task_ids: list[str]) -> dict[str, dict[str, str]]:
+    async def request_retrieve_tasks(
+        self, task_ids: list[str], skip_validation: bool = False
+    ) -> dict[str, dict[str, str]]:
         """
         Requests retrieve tasks from benchmark service
         """
 
         query_params = "&".join([f"task_ids={task_id}" for task_id in task_ids])
         response = await self._sandbox.process.exec(
-            f"curl -s -X GET 'http://localhost:8000/retrieve-tasks?{query_params}'",
+            f"curl -s -X GET 'http://localhost:8000/retrieve-tasks?{query_params}&skip_validation={skip_validation}'",
         )
 
         logger.info(f"Retrieve tasks response: {response.result}")

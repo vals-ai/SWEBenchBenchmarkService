@@ -65,7 +65,7 @@ def filter_tasks(filter: TaskFilter | None) -> list[str]:
     raise ValueError(f"Invalid filter type: `{filter}`. Expected `TaskFilter` with `task_ids` or `None`.")
 
 
-async def fetch_docker_image(task_id: str) -> tuple[str, bool]:
+async def fetch_docker_image(task_id: str, skip_validation: bool = False) -> tuple[str, bool]:
     """Fetch the docker image for a given task id and returns a boolean indicating that after the container is created, there are additional setup steps to be performed.
 
     Args:
@@ -76,6 +76,9 @@ async def fetch_docker_image(task_id: str) -> tuple[str, bool]:
 
     """
     context = TaskContext(task_id)
+
+    if skip_validation:
+        return context.docker_image, True
 
     try:
         docker_image_exists = await context.validate_docker_image(context.docker_image)
@@ -98,6 +101,10 @@ class TaskContext:
 
     def __init__(self, task_id: str):
         self._task_id = task_id
+
+    @property
+    def task_id(self) -> str:
+        return self._task_id
 
     @property
     def _row(self) -> dict[str, Any]:
@@ -144,11 +151,15 @@ class TaskContext:
                 "manifest",
                 "inspect",
                 image_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
 
             _, stderr = await result.communicate()
 
-            return result.returncode == 0 or ("unsupported manifest format" in (stderr).decode("utf-8"))
+            return result.returncode == 0 or (
+                len(stderr) > 0 and "unsupported manifest format" in stderr.decode("utf-8")
+            )
         except Exception as e:
             raise ValueError(f"Error validating docker image: {e}")
 

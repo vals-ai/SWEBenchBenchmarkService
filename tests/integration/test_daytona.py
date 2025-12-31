@@ -1,6 +1,8 @@
 import asyncio
+import json
 import os
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import pytest_asyncio
@@ -115,6 +117,40 @@ class TestDaytona:
         )
 
         return result.result
+
+    async def _insert_patch_and_evaluate(
+        self,
+        sandbox: AsyncSandbox,
+        task_context: TaskContext,
+        request_setup: bool,
+        test_client: BenchmarkServiceTestClient,
+    ) -> dict[str, Any]:
+        # Use the additional_setup flag
+        if request_setup:
+            await test_client.request_setup_task(task_id=task_context.task_id, instance_id=task_context.task_id)
+
+        # Once that is done, we simulate an agent being copied into the sandbox and running by copying the solution patch inside
+        await sandbox.fs.upload_file(
+            task_context.patch.encode("utf-8"),
+            "/tmp/patch.diff",
+        )
+
+        # Apply the solution patch to the testbed
+        try:
+            await apply_patch(sandbox, "/tmp/patch.diff")
+        except Exception:
+            raise Exception(f"Error applying solution patch for task {task_context.task_id}")
+
+        # Remove the temp patch file
+        await sandbox.fs.delete_file("/tmp/patch.diff")
+
+        # Request for evaluation
+        evaluation_result = await test_client.request_evaluate_instance(
+            task_id=task_context.task_id,
+            instance_id=task_context.task_id,
+        )
+
+        return evaluation_result
 
     async def test_build_all_sandboxes(
         self, daytona: AsyncDaytona, setup_dataset: Path, monkeypatch: MonkeyPatch
@@ -314,22 +350,11 @@ class TestDaytona:
             diff = await self._git_diff(sandbox)
             assert not diff, "Expected no diff before applying patch"
 
-            # Apply the solution patch
-            await sandbox.fs.upload_file(
-                task_context.patch.encode("utf-8"),
-                "/tmp/patch.diff",
-            )
-
+            # Insert the patch and evaluate the instance
             try:
-                await apply_patch(sandbox, "/tmp/patch.diff")
+                evaluation_result = await self._insert_patch_and_evaluate(sandbox, task_context, True, test_client)
             except Exception as e:
-                pytest.fail(f"Error applying solution patch: {e}")
-
-            # Evaluate the instance
-            evaluation_result = await test_client.request_evaluate_instance(
-                task_id=instance_id,
-                instance_id=instance_id,
-            )
+                pytest.fail(f"Error inserting patch and evaluating instance: {e}")
 
             # Verify the evaluation result
             assert evaluation_result, "Expected evaluation result"
@@ -371,31 +396,15 @@ class TestDaytona:
 
         # Create sandbox from the provided docker image
         async with build_task_environment(daytona, instance_id, response[instance_id]["docker_image"]) as sandbox:
-            # once the sandbox is created, we use the additional_setup flag
-            if response[instance_id]["request_setup"]:
-                await test_client.request_setup_task(task_id=instance_id, instance_id=instance_id)
+            task_context: TaskContext = TaskContext(instance_id)
 
-            # Once that is done, we simulate an agent being copied into the sandbox and running by copying the solution patch inside
-            task_context = TaskContext(instance_id)
-            await sandbox.fs.upload_file(
-                task_context.patch.encode("utf-8"),
-                "/tmp/patch.diff",
-            )
-
-            # Apply the solution patch to the testbed
+            # Insert the patch and evaluate the instance
             try:
-                await apply_patch(sandbox, "/tmp/patch.diff")
-            except Exception:
-                pytest.fail(f"Error applying solution patch for task {instance_id}")
-
-            # Remove the temp patch file
-            await sandbox.fs.delete_file("/tmp/patch.diff")
-
-            # Once the patch is applied, we request for evaluation
-            evaluation_result = await test_client.request_evaluate_instance(
-                task_id=instance_id,
-                instance_id=instance_id,
-            )
+                evaluation_result = await self._insert_patch_and_evaluate(
+                    sandbox, task_context, bool(response[instance_id]["request_setup"]), test_client
+                )
+            except Exception as e:
+                pytest.fail(f"Error inserting patch and evaluating instance: {e}")
 
             # Verify the evaluation result
             assert evaluation_result, "Expected evaluation result"
@@ -403,3 +412,74 @@ class TestDaytona:
             assert evaluation_result["resolved"] is True, (
                 f"Expected instance to be resolved. Result: {evaluation_result}"
             )
+
+    async def test_validate_all_images(
+        self,
+        daytona: AsyncDaytona,
+        setup_dataset: Path,
+        monkeypatch: MonkeyPatch,
+        test_client: BenchmarkServiceTestClient,
+    ) -> None:
+        if not setup_dataset.exists():
+            pytest.fail(f"Setup dataset path {setup_dataset} does not exist")
+
+        monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
+
+        dataset = load_dataset_from_disk()
+        instance_ids: list[str] = cast(list[str], [row["instance_id"] for row in dataset])  # type: ignore
+
+        response = await test_client.request_health_check()
+        assert response == {"status": "ok"}, "Expected health check to return ok"
+
+        # Validate all tasks inside of dataset
+        response = await test_client.request_verify_task_ids(task_ids=instance_ids)
+        assert response == {"task_ids": instance_ids}, "Expected task ids to be valid"
+
+        # Retrieve docker images for all tasks, skipping validation since some container manifests cannot be pulled
+        response = await test_client.request_retrieve_tasks(task_ids=instance_ids, skip_validation=True)
+
+        # cap amount of concurrent evaluations to 15
+        semaphore = asyncio.Semaphore(50)
+
+        async def start_and_evaluate_instance(instance_id: str) -> dict[str, Any]:
+            try:
+                async with semaphore:
+                    async with build_task_environment(
+                        daytona, instance_id, response[instance_id]["docker_image"]
+                    ) as sandbox:
+                        task_context = TaskContext(instance_id)
+
+                        return await self._insert_patch_and_evaluate(
+                            sandbox, task_context, bool(response[instance_id]["request_setup"]), test_client
+                        )
+            except Exception as e:
+                return {"instance_id": instance_id, "error": str(e)}
+
+        results: list[dict[str, Any]] = await asyncio.gather(
+            *[start_and_evaluate_instance(instance_id) for instance_id in instance_ids]
+        )
+
+        # Large output so we store it to a file for easy viewing
+        if not Path("tests/test_outputs").exists():
+            Path("tests/test_outputs").mkdir(parents=True, exist_ok=True)
+
+        with open("tests/test_outputs/results.json", "w") as f:
+            json.dump(results, f, indent=4)
+
+        assert len(results) == len(instance_ids), "Expected all results to be returned"
+
+        # No instances should have exit errors
+        errors: list[str] = []
+        for result in results:
+            if "error" in result:
+                errors.append(f"Task `{result['instance_id']}`: {result['error']}")
+
+        assert len(errors) == 0, f"{' \n'.join(errors)}"
+
+        # All instances should be resolved
+        not_resolved: list[str] = []
+        for result in results:
+            if not result["resolved"]:
+                not_resolved.append(f"Task `{result['instance_id']}`: {result['resolution_status']}")
+
+        assert len(not_resolved) == 0, f"{' \n'.join(not_resolved)}"
