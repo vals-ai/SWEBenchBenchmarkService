@@ -280,3 +280,7 @@ async def run_tests(sandbox: AsyncSandbox, instance_id: str) -> str:
     )
 
     return result.result
+
+
+def create_final_score(resolved_tasks: int, tasks_evaluated: int) -> float:
+    return round((resolved_tasks / tasks_evaluated) * 100, 6)

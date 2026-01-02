@@ -31,3 +31,7 @@ class EvaluationResult(BaseModel):
     f2p_score: float | None = None
     p2p_score: float | None = None
     status_map: dict[str, str] | None = None
+
+
+class FinalScoreRequest(BaseModel):
+    evaluation_results: dict[str, EvaluationResult]

@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
 from main import app
+from src.types import EvaluationResult
 from src.utils import load_dataset_from_disk
 
 client = TestClient(app)
@@ -81,3 +82,41 @@ class TestFastApiServer:
         response = client.get("/retrieve-tasks", params={"task_ids": task_ids})
 
         assert response.status_code == 200, f"Expected 200 OK {response.json()}"
+
+    async def test_final_score(self) -> None:
+        first_evaluation_result = EvaluationResult(
+            task_id="astropy__astropy-12907",
+            instance_id="astropy__astropy-12907",
+            patch_successfully_applied=True,
+            resolved=True,
+            resolution_status="FULL",
+        )
+
+        second_evaluation_result = EvaluationResult(
+            task_id="django__django-12050",
+            instance_id="django__django-12050",
+            patch_successfully_applied=True,
+            resolved=False,
+            resolution_status="NO",
+        )
+
+        evaluation_results = {
+            "astropy__astropy-12907": first_evaluation_result.model_dump(),
+            "django__django-12050": second_evaluation_result.model_dump(),
+        }
+
+        response = client.post(
+            "/final-score",
+            json={
+                "evaluation_results": evaluation_results,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "tasks_evaluated": ["astropy__astropy-12907", "django__django-12050"],
+            "final_score": round(50.0, 6),
+            "resolved_tasks": ["astropy__astropy-12907"],
+            "unresolved_tasks": ["django__django-12050"],
+            "evaluation_results": evaluation_results,
+        }

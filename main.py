@@ -6,8 +6,15 @@ from daytona.common.process import ExecuteResponse
 from fastapi import FastAPI, Header, HTTPException, Query
 
 from src.evaluation import grade_test_output
-from src.types import EvaluateInstanceRequest, EvaluateResponseRequest, EvaluationResult, SetupTaskRequest, TaskFilter
-from src.utils import TaskContext, fetch_docker_image, filter_tasks, run_tests
+from src.types import (
+    EvaluateInstanceRequest,
+    EvaluateResponseRequest,
+    EvaluationResult,
+    FinalScoreRequest,
+    SetupTaskRequest,
+    TaskFilter,
+)
+from src.utils import TaskContext, create_final_score, fetch_docker_image, filter_tasks, run_tests
 
 app = FastAPI()
 
@@ -197,5 +204,29 @@ async def evaluate_instance(
         final_result: EvaluationResult = grade_test_output(test_output, request.task_id, request.instance_id)
 
         return final_result.model_dump(exclude_none=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/final-score/")
+async def final_score(request: FinalScoreRequest) -> dict[str, Any]:
+    try:
+        tasks_evaluated = list(request.evaluation_results.keys())
+
+        resolved_tasks: dict[str, dict[str, Any]] = {}
+        unresolved_tasks: dict[str, dict[str, Any]] = {}
+        for task_id, evaluation_result in request.evaluation_results.items():
+            if evaluation_result.resolved:
+                resolved_tasks[task_id] = evaluation_result.model_dump()
+            else:
+                unresolved_tasks[task_id] = evaluation_result.model_dump()
+
+        return {
+            "tasks_evaluated": tasks_evaluated,
+            "final_score": create_final_score(len(list(resolved_tasks.keys())), len(tasks_evaluated)),
+            "resolved_tasks": list(resolved_tasks.keys()),
+            "unresolved_tasks": list(unresolved_tasks.keys()),
+            **request.model_dump(),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

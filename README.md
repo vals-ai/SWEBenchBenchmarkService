@@ -41,3 +41,4 @@ DAYTONA_TARGET=...
 - `GET /retrieve-tasks` - Get docker images and setup requirements for tasks
 - `POST /setup-task` - Run setup script for a task in a sandbox
 - `POST /evaluate-instance` - Execute tests and grade results for an instance
+- `POST /final-score` - Takes the evaluation results and produces a json containing the final score and evaluation metadata

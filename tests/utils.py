@@ -4,13 +4,14 @@ import logging
 import os
 from asyncio import Task
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, Image, Resources
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.logger import get_logger
+from src.types import EvaluationResult
 
 logger = get_logger(__name__)
 
@@ -131,6 +132,21 @@ class BenchmarkServiceTestClient:
             raise Exception(
                 f"Evaluate instance failed with exit code {response.exit_code}, command error: {response.result}"
             )
+
+        return json.loads(response.result or "{}")
+
+    async def request_final_score(self, evaluation_results: dict[str, EvaluationResult]) -> dict[str, Any]:
+        """
+        Requests final score from benchmark service
+        """
+        response = await self._sandbox.process.exec(
+            f"curl -s -X POST http://localhost:8000/final-score -H 'Content-Type: application/json' -d '{{\"evaluation_results\": {json.dumps(evaluation_results)}}}'",
+        )
+
+        logger.info(f"Final score response: {response.result}")
+
+        if response.exit_code != 0:
+            raise Exception(f"Final score failed with exit code {response.exit_code}, command error: {response.result}")
 
         return json.loads(response.result or "{}")
 
