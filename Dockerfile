@@ -1,4 +1,4 @@
-FROM docker:28.3.3-dind
+FROM --platform=linux/amd64 docker:28.3.3-dind
 
 RUN apk add --no-cache \
     python3 \
@@ -8,7 +8,8 @@ RUN apk add --no-cache \
     coreutils \
     bash
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
 
 WORKDIR /app
 
@@ -24,4 +25,4 @@ RUN rm -rf .venv __pycache__ .pytest_cache && uv run python -m src.setup
 
 EXPOSE 8000
 
-CMD ["sleep", "infinity"]
+CMD ["uv", "run", "fastapi", "run", "main.py", "--host", "0.0.0.0", "--port", "8000"]

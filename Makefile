@@ -1,4 +1,4 @@
-.PHONY: start-fastapi install task-setup quick-start test-unit test-integration
+.PHONY: start-fastapi install task-setup quick-start test-unit test-integration deploy-ecs force-deploy-ecs
 
 PYTHON_VERSION := 3.12
 
@@ -27,3 +27,9 @@ test-unit:
 
 test-integration:
 	uv run pytest tests/integration -vv
+
+deploy-ecs:
+	cdk deploy
+
+force-deploy-ecs:
+	cdk deploy --hotswap

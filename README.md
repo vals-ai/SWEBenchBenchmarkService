@@ -42,3 +42,11 @@ DAYTONA_TARGET=...
 - `POST /setup-task` - Run setup script for a task in a sandbox
 - `POST /evaluate-instance` - Execute tests and grade results for an instance
 - `POST /final-score` - Takes the evaluation results and produces a json containing the final score and evaluation metadata
+
+### Upload to AWS
+
+npm install -g aws-cdk
+
+cdk bootstrap aws://<AWS_ACCOUNT_ID>/<AWS_REGION>
+
+For first time upload use `make deploy-ecs`, anytime after you can use make `force-deploy-ecs`
