@@ -188,6 +188,29 @@ async def evaluate_instance(
     x_api_url: str = Header(...),
     x_target: str = Header(...),
 ) -> dict[str, Any]:
+    """
+    Executes tests and grades the results for an instance.
+
+    Usage
+    curl -X POST http://<endpoint>/evaluate-instance/ -H "Content-Type: application/json" -H "X-Api-Key: <api_key>" -H "X-Api-Url: <api_url>" -H "X-Target: <target>" -d '{
+        "task_id": "task_id_1", "instance_id": "instance_id_1"}'
+    {
+        "task_id": "task_id_1",
+        "instance_id": "instance_id_1",
+        "patch_successfully_applied": true,
+        "resolved": true,
+        "resolution_status": "RESOLVED_FULL",
+        "fail_to_pass": {"success": ["error_1", "error_2"], "failure": ["error_3"]},
+        "pass_to_pass": {"success": ["pass_1", "pass_2"], "failure": ["pass_3"]},
+        "f2p_score": 1.0,
+        "p2p_score": 1.0,
+        "status_map": {"test_1": "PASSED", "test_2": "SKIPPED", "test_3": "FAILED"}
+    }
+
+    Returns:
+    - 200 OK if the instance is evaluated successfully
+    - 500 Internal Server Error if the instance is not evaluated successfully
+    """
     try:
         daytona = AsyncDaytona(
             config=DaytonaConfig(
@@ -210,6 +233,23 @@ async def evaluate_instance(
 
 @app.post("/final-score/")
 async def final_score(request: FinalScoreRequest) -> dict[str, Any]:
+    """
+    Takes the evaluation results and produces a json containing the final score and evaluation metadata.
+
+    Usage
+    curl -X POST http://<endpoint>/final-score -H "Content-Type: application/json" -d '{"evaluation_results": {"task_id_1": {"resolved": true...}, "task_id_2": {"resolved": false...}}}'
+    {
+        "tasks_evaluated": ["task_id_1", "task_id_2"],
+        "final_score": 50.0,
+        "resolved_tasks": ["task_id_1"],
+        "unresolved_tasks": ["task_id_2"],
+        "evaluation_results": {"task_id_1": {"resolved": true...}, "task_id_2": {"resolved": false...}}
+    }
+
+    Returns:
+    - 200 OK if the final score is calculated successfully
+    - 500 Internal Server Error if the final score is not calculated successfully
+    """
     try:
         tasks_evaluated = list(request.evaluation_results.keys())
 
