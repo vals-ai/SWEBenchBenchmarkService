@@ -32,7 +32,7 @@ def health_check():
 
 
 @app.get("/verify-task-ids")
-def verify_task_ids(task_ids: list[str] = Query(..., description="List of task ids to verify")):
+def verify_task_ids(task_ids: list[str] | None = Query(default=None, description="List of task ids to verify")):
     """
     Verify the task ids and return list of task ids that can be found inside of the SWE-bench benchmark service.
     Used later to request tasks from the SWE-bench benchmark service.
@@ -40,7 +40,12 @@ def verify_task_ids(task_ids: list[str] = Query(..., description="List of task i
     Usage
     curl -X GET http://<endpoint>/verify-task-ids?task_ids=task_id_1&task_ids=task_id_2&task_ids=task_id_3
     {
-        "task_ids": ["task_id_1", "task_id_2", "task_id_3"]
+        "task_ids": ["task_id_1", "task_id_2", "task_id_3"]  # Only the provided task ids are verified
+    }
+
+    curl -X GET http://<endpoint>/verify-task-ids
+    {
+        "task_ids": ["task_id_1", "task_id_2", "task_id_3"]  # All tasks are verified
     }
 
     Returns:
@@ -48,7 +53,12 @@ def verify_task_ids(task_ids: list[str] = Query(..., description="List of task i
     - 500 Internal Server Error if the task ids are not verified successfully
     """
     try:
-        filtered_task_ids = filter_tasks(TaskFilter(task_ids=task_ids))
+        task_filter = TaskFilter()
+
+        if task_ids:
+            task_filter.task_ids = list(set(task_ids))
+
+        filtered_task_ids = filter_tasks(task_filter)
 
         return {"task_ids": filtered_task_ids}
     except Exception as e:

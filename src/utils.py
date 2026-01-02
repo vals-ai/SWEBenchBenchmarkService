@@ -19,7 +19,7 @@ def load_dataset_from_disk() -> Dataset:
     return load_from_disk(_DISK_PATH)  # type: ignore
 
 
-def filter_tasks(filter: TaskFilter | None) -> list[str]:
+def filter_tasks(filter: TaskFilter) -> list[str]:
     """Filter tasks based on the filter type.
 
     Args:
@@ -47,22 +47,19 @@ def filter_tasks(filter: TaskFilter | None) -> list[str]:
     if not task_ids:
         raise ValueError(f"No tasks found in `{_DISK_PATH}`. Run `make task-setup` to download tasks.")
 
-    if not filter or (filter and not filter.task_ids):
+    if not filter.task_ids:
         return task_ids
 
-    if filter and filter.task_ids:
-        intersection = [task_id for task_id in filter.task_ids if task_id in task_ids]
+    intersection = [task_id for task_id in filter.task_ids if task_id in task_ids]
 
-        if len(intersection) != len(filter.task_ids):
-            missing_task_ids = set(filter.task_ids) - set(intersection)
+    if len(intersection) != len(filter.task_ids):
+        missing_task_ids = set(filter.task_ids) - set(intersection)
 
-            raise ValueError(
-                f"Some task ids in the filter are not found in the tasks. Expected `{len(filter.task_ids)}` tasks, but found `{len(intersection)}`. Missing task ids: `{missing_task_ids}`."
-            )
+        raise ValueError(
+            f"Some task ids in the filter are not found in the tasks. Expected `{len(filter.task_ids)}` tasks, but found `{len(intersection)}`. Missing task ids: `{missing_task_ids}`."
+        )
 
-        return list(intersection)
-
-    raise ValueError(f"Invalid filter type: `{filter}`. Expected `TaskFilter` with `task_ids` or `None`.")
+    return list(intersection)
 
 
 async def fetch_docker_image(task_id: str, skip_validation: bool = False) -> tuple[str, bool]:

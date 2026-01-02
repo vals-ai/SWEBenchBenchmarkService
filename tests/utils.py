@@ -139,13 +139,13 @@ class BenchmarkServiceTestClient:
 async def build_task_environment(
     daytona: AsyncDaytona,
     task_id: str,
-    dockerfile_path: str,
+    docker_image: str,
 ) -> AsyncIterator[AsyncSandbox]:
     """
     Builds the task environment using the dockerfile path
     """
 
-    task_image = Image.base(dockerfile_path)
+    task_image = Image.base(docker_image)
     sandbox = await daytona.create(
         CreateSandboxFromImageParams(
             env_vars={"TEST_DIR": "/tests"},

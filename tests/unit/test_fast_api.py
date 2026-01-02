@@ -32,6 +32,12 @@ class TestFastApiServer:
 
         assert response.status_code == 500
 
+        # When no task ids are provided, all tasks are verified
+        response = client.get("/verify-task-ids")
+
+        assert response.status_code == 200
+        assert response.json() == {"task_ids": [row["instance_id"] for row in load_dataset_from_disk()]}  # type: ignore
+
     async def test_retrieve_tasks(self, setup_dataset: Path, monkeypatch: MonkeyPatch) -> None:
         monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
 
