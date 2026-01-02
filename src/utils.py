@@ -62,20 +62,20 @@ def filter_tasks(filter: TaskFilter) -> list[str]:
     return list(intersection)
 
 
-async def fetch_docker_image(task_id: str, skip_validation: bool = False) -> tuple[str, bool]:
+async def fetch_docker_image(task_id: str, skip_validation: bool = False) -> tuple[str, str, bool]:
     """Fetch the docker image for a given task id and returns a boolean indicating that after the container is created, there are additional setup steps to be performed.
 
     Args:
         task_id: The task id
 
     Returns:
-        tuple[str, bool]: The docker image and a boolean indicating that after the container is created, there are additional setup steps to be performed
+        tuple[str, str, bool]: The docker image, problem statement, and a boolean indicating that after the container is created, there are additional setup steps to be performed
 
     """
     context = TaskContext(task_id)
 
     if skip_validation:
-        return context.docker_image, True
+        return context.docker_image, context.problem_statement, True
 
     try:
         docker_image_exists = await context.validate_docker_image(context.docker_image)
@@ -86,7 +86,7 @@ async def fetch_docker_image(task_id: str, skip_validation: bool = False) -> tup
     except Exception as e:
         raise ValueError(f"Error validating task `{task_id}`: {e}")
 
-    return context.docker_image, True
+    return context.docker_image, context.problem_statement, True
 
 
 class TaskContext:

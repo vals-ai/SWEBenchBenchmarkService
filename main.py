@@ -80,14 +80,17 @@ async def retrieve_tasks(
     curl -X GET http://<endpoint>/retrieve-tasks?task_ids=task_id_1&task_ids=task_id_2&task_ids=task_id_3&skip_validation=true
     {
         "task_id_1": {
+            "problem_statement": "...",
             "docker_image": "ghcr.io/e.../{instance_id}:latest",
             "request_setup": true
         },
         "task_id_2": {
+            "problem_statement": "...",
             "docker_image": "ghcr.io/e.../{instance_id}:latest",
             "request_setup": true
         },
         "task_id_3": {
+            "problem_statement": "...",
             "docker_image": "ghcr.io/e.../{instance_id}:latest",
             "request_setup": true
         }
@@ -102,8 +105,12 @@ async def retrieve_tasks(
         results = await asyncio.gather(*[fetch_docker_image(task_id, skip_validation) for task_id in task_ids])
 
         return {
-            task_id: {"docker_image": docker_image, "request_setup": request_setup}
-            for task_id, (docker_image, request_setup) in zip(task_ids, results)
+            task_id: {
+                "docker_image": docker_image,
+                "problem_statement": problem_statement,
+                "request_setup": request_setup,
+            }
+            for task_id, (docker_image, problem_statement, request_setup) in zip(task_ids, results)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

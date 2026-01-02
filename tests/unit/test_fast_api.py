@@ -43,22 +43,30 @@ class TestFastApiServer:
 
         registry_image_format = "ghcr.io/epoch-research/swe-bench.eval.x86_64.{instance_id}:latest"
 
+        valid_task_ids: list[str] = ["astropy__astropy-12907", "django__django-12050"]
+
         # Contains valid task ids
-        response = client.get(
-            "/retrieve-tasks", params={"task_ids": ["astropy__astropy-12907", "django__django-12050"]}
-        )
+        response = client.get("/retrieve-tasks", params={"task_ids": valid_task_ids})
+
+        dataset = load_dataset_from_disk()
+        problem_statements: dict[str, str] = {}
+        for task_id in valid_task_ids:
+            problem_statements[task_id] = dataset.filter(lambda x: x["instance_id"] == task_id)[0].get(  # type: ignore
+                "problem_statement", ""
+            )
 
         assert response.status_code == 200
-        assert response.json() == {
-            "astropy__astropy-12907": {
-                "docker_image": registry_image_format.format(instance_id="astropy__astropy-12907"),
+
+        expected_response = {
+            task_id: {
+                "docker_image": registry_image_format.format(instance_id=task_id),
+                "problem_statement": problem_statements[task_id],
                 "request_setup": True,
-            },
-            "django__django-12050": {
-                "docker_image": registry_image_format.format(instance_id="django__django-12050"),
-                "request_setup": True,
-            },
+            }
+            for task_id in valid_task_ids
         }
+
+        assert response.json() == expected_response
 
         # Contains invalid task ids
         response = client.get("/retrieve-tasks", params={"task_ids": ["astropy__astropy-12907", "invalid-task-id"]})
@@ -66,7 +74,7 @@ class TestFastApiServer:
         assert response.status_code == 500
 
         # All tasks are valid
-        task_ids: list[str] = [row["instance_id"] for row in load_dataset_from_disk()]  # type: ignore
+        task_ids: list[str] = [row["instance_id"] for row in dataset]  # type: ignore
 
         assert len(task_ids) == 500, "Expected 500 tasks to be available"
 
