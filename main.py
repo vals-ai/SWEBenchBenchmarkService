@@ -6,7 +6,7 @@ from daytona.common.process import ExecuteResponse
 from fastapi import FastAPI, Header, HTTPException, Query
 
 from src.evaluation import grade_test_output
-from src.types import EvaluateInstanceRequest, EvaluateResponseRequest, SetupTaskRequest, TaskFilter
+from src.types import EvaluateInstanceRequest, EvaluateResponseRequest, EvaluationResult, SetupTaskRequest, TaskFilter
 from src.utils import TaskContext, fetch_docker_image, filter_tasks, run_tests
 
 app = FastAPI()
@@ -194,8 +194,8 @@ async def evaluate_instance(
 
         test_output = await run_tests(sandbox, request.instance_id)
 
-        final_result = grade_test_output(test_output, request.instance_id)
+        final_result: EvaluationResult = grade_test_output(test_output, request.task_id, request.instance_id)
 
-        return final_result
+        return final_result.model_dump(exclude_none=True)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

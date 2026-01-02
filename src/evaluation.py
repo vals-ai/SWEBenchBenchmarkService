@@ -3,7 +3,7 @@ Isolated file for grading the test output for a given instance.
 We isolate this file from utils.py as all dependencies come from the swebench package.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING
 
 from swebench.harness.constants import (
     APPLY_PATCH_FAIL,
@@ -27,8 +27,11 @@ from swebench.harness.grading import (
 )
 from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
 
+if TYPE_CHECKING:
+    from src.types import EvaluationResult
 
-def grade_test_output(test_output: str, instance_id: str) -> dict[str, Any]:
+
+def grade_test_output(test_output: str, task_id: str, instance_id: str) -> "EvaluationResult":
     """
     Grade test output in memory using SWE-bench's logic.
 
@@ -48,21 +51,23 @@ def grade_test_output(test_output: str, instance_id: str) -> dict[str, Any]:
     ]
 
     if any(code in test_output for code in bad_codes):
-        return {
-            "instance_id": instance_id,
-            "patch_successfully_applied": False,
-            "resolved": False,
-            "resolution_status": "NO",
-        }
+        return EvaluationResult(
+            task_id=task_id,
+            instance_id=instance_id,
+            patch_successfully_applied=False,
+            resolved=False,
+            resolution_status="NO",
+        )
 
     # Check for test output markers
     if not (START_TEST_OUTPUT in test_output and END_TEST_OUTPUT in test_output):
-        return {
-            "instance_id": instance_id,
-            "patch_successfully_applied": False,
-            "resolved": False,
-            "resolution_status": "NO",
-        }
+        return EvaluationResult(
+            task_id=task_id,
+            instance_id=instance_id,
+            patch_successfully_applied=False,
+            resolved=False,
+            resolution_status="NO",
+        )
 
     # Get log parser for this repo
     log_parser = MAP_REPO_TO_PARSER[test_spec.repo]
@@ -98,20 +103,21 @@ def grade_test_output(test_output: str, instance_id: str) -> dict[str, Any]:
     f2p_score = compute_fail_to_pass(report)
     p2p_score = compute_pass_to_pass(report)
 
-    return {
-        "instance_id": instance_id,
-        "patch_successfully_applied": True,
-        "resolved": resolution_status == ResolvedStatus.FULL.value,
-        "resolution_status": resolution_status,
-        "fail_to_pass": {
+    return EvaluationResult(
+        task_id=task_id,
+        instance_id=instance_id,
+        patch_successfully_applied=True,
+        resolved=resolution_status == ResolvedStatus.FULL.value,
+        resolution_status=resolution_status,
+        fail_to_pass={
             "success": report[FAIL_TO_PASS]["success"],
             "failure": report[FAIL_TO_PASS]["failure"],
         },
-        "pass_to_pass": {
+        pass_to_pass={
             "success": report[PASS_TO_PASS]["success"],
             "failure": report[PASS_TO_PASS]["failure"],
         },
-        "f2p_score": f2p_score,
-        "p2p_score": p2p_score,
-        "status_map": status_map,
-    }
+        f2p_score=f2p_score,
+        p2p_score=p2p_score,
+        status_map=status_map,
+    )
