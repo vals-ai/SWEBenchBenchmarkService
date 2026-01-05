@@ -181,13 +181,13 @@ def evaluate_response(_request: EvaluateResponseRequest):
     )
 
 
-@app.post("/evaluate-instance/")
+@app.post("/evaluate-instance/", response_model_exclude_none=True)
 async def evaluate_instance(
     request: EvaluateInstanceRequest,
     x_api_key: str = Header(...),
     x_api_url: str = Header(...),
     x_target: str = Header(...),
-) -> dict[str, Any]:
+) -> EvaluationResult:
     """
     Executes tests and grades the results for an instance.
 
@@ -226,7 +226,7 @@ async def evaluate_instance(
 
         final_result: EvaluationResult = grade_test_output(test_output, request.task_id, request.instance_id)
 
-        return final_result.model_dump(exclude_none=True)
+        return final_result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
