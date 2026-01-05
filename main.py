@@ -63,7 +63,7 @@ def verify_task_ids(task_ids: list[str] | None = Query(default=None, description
         task_filter = TaskFilter()
 
         if task_ids:
-            task_filter.task_ids = list(set(task_ids))
+            task_filter.task_ids = list(dict.fromkeys(task_ids))
 
         filtered_task_ids = filter_tasks(task_filter)
 
