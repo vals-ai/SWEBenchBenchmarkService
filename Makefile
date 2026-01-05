@@ -29,7 +29,7 @@ test-integration:
 	uv run pytest tests/integration -vv
 
 deploy-ecs:
-	cdk deploy
+	uv run cdk deploy
 
 force-deploy-ecs:
-	cdk deploy --hotswap
+	uv run cdk deploy --hotswap

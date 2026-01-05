@@ -83,6 +83,10 @@ class TestFastApiServer:
 
         assert response.status_code == 200, f"Expected 200 OK {response.json()}"
 
+        # Validate task_id restriction (min length 1)
+        response = client.get("/retrieve-tasks", params={"task_ids": []})
+        assert response.status_code == 422, f"Expected 422 Unprocessable Entity {response.json()}"
+
     async def test_final_score(self) -> None:
         first_evaluation_result = EvaluationResult(
             task_id="astropy__astropy-12907",

@@ -74,7 +74,7 @@ def verify_task_ids(task_ids: list[str] | None = Query(default=None, description
 
 @app.get("/retrieve-tasks")
 async def retrieve_tasks(
-    task_ids: list[str] = Query(..., description="List of task ids to retrieve"),
+    task_ids: list[str] = Query(..., min_length=1, description="List of task ids to retrieve"),
     skip_validation: bool = Query(False, description="Skip validation of the docker images"),
 ) -> dict[str, dict[str, Any]]:
     """
