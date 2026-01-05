@@ -182,7 +182,7 @@ class TestDaytona:
             if not was_built:
                 errors.append(f"Task `{task_id}`: {error}")
 
-        assert len(errors) == 0, f"{' \n'.join(errors)}"
+        assert len(errors) == 0, " \n".join(errors)
 
     async def test_apply_patch(
         self,
@@ -474,7 +474,7 @@ class TestDaytona:
             if "error" in result:
                 errors.append(f"Task `{result['instance_id']}`: {result['error']}")
 
-        assert len(errors) == 0, f"{' \n'.join(errors)}"
+        assert len(errors) == 0, " \n".join(errors)
 
         # All instances should be resolved
         not_resolved: list[str] = []
@@ -482,4 +482,4 @@ class TestDaytona:
             if not result["resolved"]:
                 not_resolved.append(f"Task `{result['instance_id']}`: {result['resolution_status']}")
 
-        assert len(not_resolved) == 0, f"{' \n'.join(not_resolved)}"
+        assert len(not_resolved) == 0, " \n".join(not_resolved)
