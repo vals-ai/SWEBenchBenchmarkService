@@ -30,9 +30,13 @@ Integration tests
 
 ### Required Environment variables
 
+Related documentation can be found [here](https://www.daytona.io/docs/configuration#env-file)
+
+```
 DAYTONA_API_KEY=...
 DAYTONA_API_URL=...
 DAYTONA_TARGET=...
+```
 
 ### Endpoints
 
@@ -45,8 +49,14 @@ DAYTONA_TARGET=...
 
 ### Upload to AWS
 
-npm install -g aws-cdk
+First time install and publish
 
-cdk bootstrap aws://<AWS_ACCOUNT_ID>/<AWS_REGION>
+- `npm install -g aws-cdk`
+- `cdk bootstrap aws://<AWS_ACCOUNT_ID>/<AWS_REGION>`
+- `make deploy-ecs`
 
-For first time upload use `make deploy-ecs`, anytime after you can use make `force-deploy-ecs`
+Redeploy
+
+- `force-deploy-ecs`
+
+Average deploy time is 385.79s

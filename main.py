@@ -222,7 +222,7 @@ async def evaluate_instance(
 
         sandbox = await daytona.get(request.instance_id)
 
-        test_output = await run_tests(sandbox, request.instance_id)
+        test_output: str = await run_tests(sandbox, request.task_id, request.instance_id)
 
         final_result: EvaluationResult = grade_test_output(test_output, request.task_id, request.instance_id)
 

@@ -183,11 +183,11 @@ async def create_sandbox(daytona: AsyncDaytona, sandbox_name: str, image: str) -
         await daytona.delete(sandbox)
 
 
-def fetch_test_spec(instance_id: str) -> TestSpec:
+def fetch_test_spec(task_id: str) -> TestSpec:
     dataset = load_dataset_from_disk()
-    row = dataset.filter(lambda x: x["instance_id"] == instance_id)  # type: ignore
+    row = dataset.filter(lambda x: x["instance_id"] == task_id)  # type: ignore
     if not row:
-        raise ValueError(f"Task `{instance_id}` not found in dataset")
+        raise ValueError(f"Task `{task_id}` not found in dataset")
 
     return make_test_spec(row[0])  # type: ignore
 
@@ -225,8 +225,8 @@ async def apply_patch(sandbox: AsyncSandbox, patch_path: str) -> str:
     raise ValueError(f"Failed to apply patch `{patch_path}`")
 
 
-def create_evaluation_script(instance_id: str) -> str:
-    test_spec: TestSpec = fetch_test_spec(instance_id)
+def create_evaluation_script(task_id: str, instance_id: str) -> str:
+    test_spec: TestSpec = fetch_test_spec(task_id)
 
     evaluation_script: str = test_spec.eval_script
 
@@ -247,7 +247,7 @@ def create_run_command(instance_id: str) -> str:
     return run_command
 
 
-async def run_tests(sandbox: AsyncSandbox, instance_id: str) -> str:
+async def run_tests(sandbox: AsyncSandbox, task_id: str, instance_id: str) -> str:
     # Fetch the patch from the container
     container_patch = await fetch_patch(sandbox)
 
@@ -266,7 +266,7 @@ async def run_tests(sandbox: AsyncSandbox, instance_id: str) -> str:
     # Apply the patch to the repository
     await apply_patch(sandbox, "/tmp/patch.diff")
 
-    evaluation_script: str = create_evaluation_script(instance_id)
+    evaluation_script: str = create_evaluation_script(task_id, instance_id)
 
     await sandbox.fs.upload_file(
         evaluation_script.encode("utf-8"),

@@ -40,7 +40,7 @@ def grade_test_output(test_output: str, task_id: str, instance_id: str) -> "Eval
     """
     from src.utils import fetch_test_spec
 
-    test_spec: TestSpec = fetch_test_spec(instance_id)
+    test_spec: TestSpec = fetch_test_spec(task_id)
 
     # Check for error codes
     bad_codes = [

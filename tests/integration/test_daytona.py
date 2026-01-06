@@ -127,7 +127,7 @@ class TestDaytona:
     ) -> dict[str, Any]:
         # Use the additional_setup flag
         if request_setup:
-            await test_client.request_setup_task(task_id=task_context.task_id, instance_id=task_context.task_id)
+            await test_client.request_setup_task(task_id=task_context.task_id, instance_id=sandbox.id)
 
         # Once that is done, we simulate an agent being copied into the sandbox and running by copying the solution patch inside
         await sandbox.fs.upload_file(
@@ -147,7 +147,7 @@ class TestDaytona:
         # Request for evaluation
         evaluation_result = await test_client.request_evaluate_instance(
             task_id=task_context.task_id,
-            instance_id=task_context.task_id,
+            instance_id=sandbox.id,
         )
 
         return evaluation_result
@@ -174,7 +174,7 @@ class TestDaytona:
                     return task_id, str(e), False
 
         results: list[tuple[str, str, bool]] = await asyncio.gather(
-            *[build_image(task["instance_id"]) for task in dataset]  # type: ignore
+            *[build_image(task_id=task["instance_id"]) for task in dataset]  # type: ignore
         )
 
         errors: list[str] = []
@@ -197,12 +197,12 @@ class TestDaytona:
 
         monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
 
-        instance_id = "astropy__astropy-12907"
+        task_id = "astropy__astropy-12907"
 
-        task_context = TaskContext(instance_id)
-        async with create_sandbox(daytona, instance_id, task_context.docker_image) as sandbox:
+        task_context = TaskContext(task_id)
+        async with create_sandbox(daytona, task_id, task_context.docker_image) as sandbox:
             # Setup task environment, ensuring we are on the correct base commit
-            await test_client.request_setup_task(task_id=instance_id, instance_id=instance_id)
+            await test_client.request_setup_task(task_id=task_id, instance_id=sandbox.id)
 
             # Verify we are on the correct commit (validates that the setup script worked)
             verify_result = await sandbox.process.exec(
@@ -211,11 +211,11 @@ class TestDaytona:
             )
 
             if verify_result.exit_code != 0:
-                pytest.fail(f"Error verifying commit for task {instance_id} with error: {verify_result.result}")
+                pytest.fail(f"Error verifying commit for task {task_id} with error: {verify_result.result}")
 
             actual_commit = verify_result.result.strip()
             assert actual_commit == task_context.base_commit, (
-                f"Expected commit {task_context.base_commit} but got {actual_commit} for task {instance_id}"
+                f"Expected commit {task_context.base_commit} but got {actual_commit} for task {task_id}"
             )
 
             # Verify that there is no diff before applying patch
@@ -232,7 +232,7 @@ class TestDaytona:
             try:
                 await apply_patch(sandbox, "/tmp/patch.diff")
             except Exception:
-                pytest.fail(f"Error applying solution patch for task {instance_id}")
+                pytest.fail(f"Error applying solution patch for task {task_id}")
 
             # Verify that there is a diff after applying patch
             diff = await self._git_diff(sandbox)
@@ -250,11 +250,11 @@ class TestDaytona:
             pytest.fail(f"Setup script path {setup_script_path} does not exist")
 
         monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
-        instance_id = "astropy__astropy-12907"
-        task_context = TaskContext(instance_id)
+        task_id = "astropy__astropy-12907"
+        task_context = TaskContext(task_id)
 
-        async with create_sandbox(daytona, instance_id, task_context.docker_image) as sandbox:
-            await test_client.request_setup_task(task_id=instance_id, instance_id=instance_id)
+        async with create_sandbox(daytona, task_id, task_context.docker_image) as sandbox:
+            await test_client.request_setup_task(task_id=task_id, instance_id=sandbox.id)
 
             diff = await self._git_diff(sandbox)
             assert diff == "", "Expected no diff before applying patch"
@@ -325,12 +325,12 @@ class TestDaytona:
             pytest.fail(f"Setup script path {setup_script_path} does not exist")
 
         monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
-        instance_id = "astropy__astropy-12907"
-        task_context = TaskContext(instance_id)
+        task_id = "astropy__astropy-12907"
+        task_context = TaskContext(task_id)
 
-        async with create_sandbox(daytona, instance_id, task_context.docker_image) as sandbox:
+        async with create_sandbox(daytona, task_id, task_context.docker_image) as sandbox:
             # Setup environment on base commit
-            await test_client.request_setup_task(task_id=instance_id, instance_id=instance_id)
+            await test_client.request_setup_task(task_id=task_id, instance_id=sandbox.id)
 
             # Verify we're on the correct commit
             verify_result = await sandbox.process.exec(
@@ -375,33 +375,33 @@ class TestDaytona:
 
         monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
 
-        instance_id = "astropy__astropy-12907"
+        task_id = "astropy__astropy-12907"
 
         # Ensure service is running
         response = await test_client.request_health_check()
         assert response == {"status": "ok"}, "Expected health check to return ok"
 
         # Verify task ids are valid
-        response = await test_client.request_verify_task_ids(task_ids=[instance_id])
-        assert response == {"task_ids": [instance_id]}, "Expected task ids to be valid"
+        response = await test_client.request_verify_task_ids(task_ids=[task_id])
+        assert response == {"task_ids": [task_id]}, "Expected task ids to be valid"
 
         # Retrieve task
-        response = await test_client.request_retrieve_tasks(task_ids=[instance_id])
+        response = await test_client.request_retrieve_tasks(task_ids=[task_id])
         assert response == {
-            instance_id: {
-                "docker_image": f"ghcr.io/epoch-research/swe-bench.eval.x86_64.{instance_id}:latest",
+            task_id: {
+                "docker_image": f"ghcr.io/epoch-research/swe-bench.eval.x86_64.{task_id}:latest",
                 "request_setup": True,
             }
         }, "Expected task to be retrieved"
 
         # Create sandbox from the provided docker image
-        async with build_task_environment(daytona, instance_id, response[instance_id]["docker_image"]) as sandbox:
-            task_context: TaskContext = TaskContext(instance_id)
+        async with build_task_environment(daytona, task_id, response[task_id]["docker_image"]) as sandbox:
+            task_context: TaskContext = TaskContext(task_id)
 
             # Insert the patch and evaluate the instance
             try:
                 evaluation_result = await self._insert_patch_and_evaluate(
-                    sandbox, task_context, bool(response[instance_id]["request_setup"]), test_client
+                    sandbox, task_context, bool(response[task_id]["request_setup"]), test_client
                 )
             except Exception as e:
                 pytest.fail(f"Error inserting patch and evaluating instance: {e}")
@@ -426,37 +426,35 @@ class TestDaytona:
         monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
 
         dataset = load_dataset_from_disk()
-        instance_ids: list[str] = cast(list[str], [row["instance_id"] for row in dataset])  # type: ignore
+        task_ids: list[str] = cast(list[str], [row["instance_id"] for row in dataset])  # type: ignore
 
         response = await test_client.request_health_check()
         assert response == {"status": "ok"}, "Expected health check to return ok"
 
         # Validate all tasks inside of dataset
-        response = await test_client.request_verify_task_ids(task_ids=instance_ids)
-        assert response == {"task_ids": instance_ids}, "Expected task ids to be valid"
+        response = await test_client.request_verify_task_ids(task_ids=task_ids)
+        assert response == {"task_ids": task_ids}, "Expected task ids to be valid"
 
         # Retrieve docker images for all tasks, skipping validation since some container manifests cannot be pulled
-        response = await test_client.request_retrieve_tasks(task_ids=instance_ids, skip_validation=True)
+        response = await test_client.request_retrieve_tasks(task_ids=task_ids, skip_validation=True)
 
         # cap amount of concurrent evaluations to 15
         semaphore = asyncio.Semaphore(50)
 
-        async def start_and_evaluate_instance(instance_id: str) -> dict[str, Any]:
+        async def start_and_evaluate_instance(task_id: str) -> dict[str, Any]:
             try:
                 async with semaphore:
-                    async with build_task_environment(
-                        daytona, instance_id, response[instance_id]["docker_image"]
-                    ) as sandbox:
-                        task_context = TaskContext(instance_id)
+                    async with build_task_environment(daytona, task_id, response[task_id]["docker_image"]) as sandbox:
+                        task_context = TaskContext(task_id)
 
                         return await self._insert_patch_and_evaluate(
-                            sandbox, task_context, bool(response[instance_id]["request_setup"]), test_client
+                            sandbox, task_context, bool(response[task_id]["request_setup"]), test_client
                         )
             except Exception as e:
-                return {"instance_id": instance_id, "error": str(e)}
+                return {"task_id": task_id, "error": str(e)}
 
         results: list[dict[str, Any]] = await asyncio.gather(
-            *[start_and_evaluate_instance(instance_id) for instance_id in instance_ids]
+            *[start_and_evaluate_instance(task_id) for task_id in task_ids]
         )
 
         # Large output so we store it to a file for easy viewing
@@ -466,7 +464,7 @@ class TestDaytona:
         with open("tests/test_outputs/results.json", "w") as f:
             json.dump(results, f, indent=4)
 
-        assert len(results) == len(instance_ids), "Expected all results to be returned"
+        assert len(results) == len(task_ids), "Expected all results to be returned"
 
         # No instances should have exit errors
         errors: list[str] = []
