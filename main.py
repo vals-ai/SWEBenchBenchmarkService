@@ -253,20 +253,20 @@ async def final_score(request: FinalScoreRequest) -> dict[str, Any]:
     try:
         tasks_evaluated = list(request.evaluation_results.keys())
 
-        resolved_tasks: dict[str, dict[str, Any]] = {}
-        unresolved_tasks: dict[str, dict[str, Any]] = {}
+        resolved_tasks: list[str] = []
+        unresolved_tasks: list[str] = []
         for task_id, evaluation_result in request.evaluation_results.items():
             if evaluation_result.resolved:
-                resolved_tasks[task_id] = evaluation_result.model_dump()
+                resolved_tasks.append(task_id)
             else:
-                unresolved_tasks[task_id] = evaluation_result.model_dump()
+                unresolved_tasks.append(task_id)
 
         return {
             "tasks_evaluated": tasks_evaluated,
-            "final_score": create_final_score(len(list(resolved_tasks.keys())), len(tasks_evaluated)),
-            "resolved_tasks": list(resolved_tasks.keys()),
-            "unresolved_tasks": list(unresolved_tasks.keys()),
-            **request.model_dump(),
+            "final_score": create_final_score(len(resolved_tasks), len(tasks_evaluated)),
+            "resolved_tasks": resolved_tasks,
+            "unresolved_tasks": unresolved_tasks,
+            **request.model_dump(exclude_none=True),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -105,8 +105,8 @@ class TestFastApiServer:
         )
 
         evaluation_results = {
-            "astropy__astropy-12907": first_evaluation_result.model_dump(),
-            "django__django-12050": second_evaluation_result.model_dump(),
+            "astropy__astropy-12907": first_evaluation_result.model_dump(exclude_none=True),
+            "django__django-12050": second_evaluation_result.model_dump(exclude_none=True),
         }
 
         response = client.post(
