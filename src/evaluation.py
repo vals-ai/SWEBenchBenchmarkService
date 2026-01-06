@@ -3,8 +3,6 @@ Isolated file for grading the test output for a given instance.
 We isolate this file from utils.py as all dependencies come from the swebench package.
 """
 
-from typing import TYPE_CHECKING
-
 from swebench.harness.constants import (
     APPLY_PATCH_FAIL,
     END_TEST_OUTPUT,
@@ -27,11 +25,10 @@ from swebench.harness.grading import (
 )
 from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
 
-if TYPE_CHECKING:
-    from src.types import EvaluationResult
+from src.types import EvaluationResult
 
 
-def grade_test_output(test_output: str, task_id: str, instance_id: str) -> "EvaluationResult":
+def grade_test_output(test_output: str, task_id: str, instance_id: str) -> EvaluationResult:
     """
     Grade test output in memory using SWE-bench's logic.
 
