@@ -386,22 +386,20 @@ class TestDaytona:
         assert response == {"task_ids": [task_id]}, "Expected task ids to be valid"
 
         # Retrieve task
-        response = await test_client.request_retrieve_tasks(task_ids=[task_id])
+        response = await test_client.request_retrieve_task(task_id=task_id)
         assert response == {
-            task_id: {
-                "docker_image": f"ghcr.io/epoch-research/swe-bench.eval.x86_64.{task_id}:latest",
-                "request_setup": True,
-            }
+            "docker_image": f"ghcr.io/epoch-research/swe-bench.eval.x86_64.{task_id}:latest",
+            "request_setup": True,
         }, "Expected task to be retrieved"
 
         # Create sandbox from the provided docker image
-        async with build_task_environment(daytona, task_id, response[task_id]["docker_image"]) as sandbox:
+        async with build_task_environment(daytona, task_id, response["docker_image"]) as sandbox:
             task_context: TaskContext = TaskContext(task_id)
 
             # Insert the patch and evaluate the instance
             try:
                 evaluation_result = await self._insert_patch_and_evaluate(
-                    sandbox, task_context, bool(response[task_id]["request_setup"]), test_client
+                    sandbox, task_context, bool(response["request_setup"]), test_client
                 )
             except Exception as e:
                 pytest.fail(f"Error inserting patch and evaluating instance: {e}")
@@ -435,20 +433,18 @@ class TestDaytona:
         response = await test_client.request_verify_task_ids(task_ids=task_ids)
         assert response == {"task_ids": task_ids}, "Expected task ids to be valid"
 
-        # Retrieve docker images for all tasks, skipping validation since some container manifests cannot be pulled
-        response = await test_client.request_retrieve_tasks(task_ids=task_ids, skip_validation=True)
-
         # cap amount of concurrent evaluations to 15
         semaphore = asyncio.Semaphore(50)
 
         async def start_and_evaluate_instance(task_id: str) -> dict[str, Any]:
             try:
                 async with semaphore:
-                    async with build_task_environment(daytona, task_id, response[task_id]["docker_image"]) as sandbox:
+                    task_response = await test_client.request_retrieve_task(task_id=task_id, skip_validation=True)
+                    async with build_task_environment(daytona, task_id, task_response["docker_image"]) as sandbox:
                         task_context = TaskContext(task_id)
 
                         return await self._insert_patch_and_evaluate(
-                            sandbox, task_context, bool(response[task_id]["request_setup"]), test_client
+                            sandbox, task_context, bool(task_response["request_setup"]), test_client
                         )
             except Exception as e:
                 return {"task_id": task_id, "error": str(e)}

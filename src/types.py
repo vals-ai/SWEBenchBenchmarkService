@@ -34,4 +34,4 @@ class EvaluationResult(BaseModel):
 
 
 class FinalScoreRequest(BaseModel):
-    evaluation_results: dict[str, EvaluationResult]
+    evaluation_results: dict[str, EvaluationResult | None]

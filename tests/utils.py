@@ -66,23 +66,20 @@ class BenchmarkServiceTestClient:
 
         return json.loads(response.result or "{}")
 
-    async def request_retrieve_tasks(
-        self, task_ids: list[str], skip_validation: bool = False
-    ) -> dict[str, dict[str, str]]:
+    async def request_retrieve_task(self, task_id: str, skip_validation: bool = False) -> dict[str, str]:
         """
-        Requests retrieve tasks from benchmark service
+        Requests retrieve task from benchmark service
         """
 
-        query_params = "&".join([f"task_ids={task_id}" for task_id in task_ids])
         response = await self._sandbox.process.exec(
-            f"curl -s -X GET 'http://localhost:8000/retrieve-tasks?{query_params}&skip_validation={skip_validation}'",
+            f"curl -s -X GET 'http://localhost:8000/retrieve-task/?task_id={task_id}&skip_validation={skip_validation}'",
         )
 
-        logger.info(f"Retrieve tasks response: {response.result}")
+        logger.info(f"Retrieve task response: {response.result}")
 
         if response.exit_code != 0:
             raise Exception(
-                f"Retrieve tasks failed with exit code {response.exit_code}, command error: {response.result}"
+                f"Retrieve task failed with exit code {response.exit_code}, command error: {response.result}"
             )
 
         return json.loads(response.result or "{}")

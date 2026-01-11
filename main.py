@@ -1,4 +1,3 @@
-import asyncio
 from typing import Any
 
 from daytona import AsyncDaytona, DaytonaConfig
@@ -72,52 +71,37 @@ def verify_task_ids(task_ids: list[str] | None = Query(default=None, description
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/retrieve-tasks")
-async def retrieve_tasks(
-    task_ids: list[str] = Query(..., min_length=1, description="List of task ids to retrieve"),
-    skip_validation: bool = Query(False, description="Skip validation of the docker images"),
-) -> dict[str, dict[str, Any]]:
+@app.get("/retrieve-task/")
+async def retrieve_task(
+    task_id: str = Query(..., description="Task id to retrieve"),
+    skip_validation: bool = Query(False, description="Skip validation of the docker image"),
+) -> dict[str, Any]:
     """
-    Returns a mapping between task ids request and the docker images that are used to build the task environments.
+    Returns the docker image and metadata for a single task.
 
     Following this format:
     ghcr.io/epoch-research/swe-bench.eval.x86_64.{instance_id}:latest
 
     Usage
-    curl -X GET http://<endpoint>/retrieve-tasks?task_ids=task_id_1&task_ids=task_id_2&task_ids=task_id_3&skip_validation=true
+    curl -X GET http://<endpoint>/retrieve-task/?task_id=task_id_1&skip_validation=true
     {
-        "task_id_1": {
-            "problem_statement": "...",
-            "docker_image": "ghcr.io/e.../{instance_id}:latest",
-            "request_setup": true
-        },
-        "task_id_2": {
-            "problem_statement": "...",
-            "docker_image": "ghcr.io/e.../{instance_id}:latest",
-            "request_setup": true
-        },
-        "task_id_3": {
-            "problem_statement": "...",
-            "docker_image": "ghcr.io/e.../{instance_id}:latest",
-            "request_setup": true
-        }
+        "docker_image": "ghcr.io/e.../{instance_id}:latest",
+        "problem_statement": "...",
+        "request_setup": true
     }
 
     Returns:
-    - 200 OK if the tasks are retrieved successfully
-    - 500 Internal Server Error if the tasks are not retrieved successfully
+    - 200 OK if the task is retrieved successfully
+    - 500 Internal Server Error if the task is not retrieved successfully
 
     """
     try:
-        results = await asyncio.gather(*[fetch_docker_image(task_id, skip_validation) for task_id in task_ids])
+        docker_image, problem_statement, request_setup = await fetch_docker_image(task_id, skip_validation)
 
         return {
-            task_id: {
-                "docker_image": docker_image,
-                "problem_statement": problem_statement,
-                "request_setup": request_setup,
-            }
-            for task_id, (docker_image, problem_statement, request_setup) in zip(task_ids, results)
+            "docker_image": docker_image,
+            "problem_statement": problem_statement,
+            "request_setup": request_setup,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -256,7 +240,7 @@ async def final_score(request: FinalScoreRequest) -> dict[str, Any]:
         resolved_tasks: list[str] = []
         unresolved_tasks: list[str] = []
         for task_id, evaluation_result in request.evaluation_results.items():
-            if evaluation_result.resolved:
+            if evaluation_result and evaluation_result.resolved:
                 resolved_tasks.append(task_id)
             else:
                 unresolved_tasks.append(task_id)

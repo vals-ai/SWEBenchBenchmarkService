@@ -42,7 +42,7 @@ DAYTONA_TARGET=...
 
 - `GET /health` - Health check endpoint
 - `GET /verify-task-ids` - Verify task IDs exist in SWE-bench benchmark
-- `GET /retrieve-tasks` - Get docker images and setup requirements for tasks
+- `GET /retrieve-task/` - Get docker image and setup requirements for a single task
 - `POST /setup-task` - Run setup script for a task in a sandbox
 - `POST /evaluate-instance` - Execute tests and grade results for an instance
 - `POST /final-score` - Takes the evaluation results and produces a json containing the final score and evaluation metadata

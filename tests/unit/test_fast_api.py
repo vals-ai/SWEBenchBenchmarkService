@@ -39,52 +39,50 @@ class TestFastApiServer:
         assert response.status_code == 200
         assert response.json() == {"task_ids": [row["instance_id"] for row in load_dataset_from_disk()]}  # type: ignore
 
-    async def test_retrieve_tasks(self, setup_dataset: Path, monkeypatch: MonkeyPatch) -> None:
+    async def test_retrieve_task(self, setup_dataset: Path, monkeypatch: MonkeyPatch) -> None:
         monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
 
         registry_image_format = "ghcr.io/epoch-research/swe-bench.eval.x86_64.{instance_id}:latest"
 
-        valid_task_ids: list[str] = ["astropy__astropy-12907", "django__django-12050"]
+        valid_task_id: str = "astropy__astropy-12907"
 
-        # Contains valid task ids
-        response = client.get("/retrieve-tasks", params={"task_ids": valid_task_ids})
+        response = client.get("/retrieve-task/", params={"task_id": valid_task_id})
 
         dataset = load_dataset_from_disk()
-        problem_statements: dict[str, str] = {}
-        for task_id in valid_task_ids:
-            problem_statements[task_id] = dataset.filter(lambda x: x["instance_id"] == task_id)[0].get(  # type: ignore
-                "problem_statement", ""
-            )
+        problem_statement: str = dataset.filter(lambda x: x["instance_id"] == valid_task_id)[0].get(  # type: ignore
+            "problem_statement", ""
+        )
 
         assert response.status_code == 200
 
-        expected_response = {
-            task_id: {
-                "docker_image": registry_image_format.format(instance_id=task_id),
-                "problem_statement": problem_statements[task_id],
-                "request_setup": True,
-            }
-            for task_id in valid_task_ids
+        expected_response: dict[str, str | bool] = {
+            "docker_image": registry_image_format.format(instance_id=valid_task_id),
+            "problem_statement": problem_statement,
+            "request_setup": True,
         }
 
         assert response.json() == expected_response
 
-        # Contains invalid task ids
-        response = client.get("/retrieve-tasks", params={"task_ids": ["astropy__astropy-12907", "invalid-task-id"]})
+        response = client.get("/retrieve-task/", params={"task_id": "invalid-task-id"})
 
         assert response.status_code == 500
 
-        # All tasks are valid
-        task_ids: list[str] = [row["instance_id"] for row in dataset]  # type: ignore
+        response = client.get("/retrieve-task/", params={"task_id": "django__django-12050"})
 
-        assert len(task_ids) == 500, "Expected 500 tasks to be available"
+        problem_statement_django: str = dataset.filter(lambda x: x["instance_id"] == "django__django-12050")[0].get(  # type: ignore
+            "problem_statement", ""
+        )
 
-        response = client.get("/retrieve-tasks", params={"task_ids": task_ids})
+        expected_response_django: dict[str, str | bool] = {
+            "docker_image": registry_image_format.format(instance_id="django__django-12050"),
+            "problem_statement": problem_statement_django,
+            "request_setup": True,
+        }
 
         assert response.status_code == 200, f"Expected 200 OK {response.json()}"
+        assert response.json() == expected_response_django
 
-        # Validate task_id restriction (min length 1)
-        response = client.get("/retrieve-tasks", params={"task_ids": []})
+        response = client.get("/retrieve-task/")
         assert response.status_code == 422, f"Expected 422 Unprocessable Entity {response.json()}"
 
     async def test_final_score(self) -> None:
@@ -96,17 +94,9 @@ class TestFastApiServer:
             resolution_status="FULL",
         )
 
-        second_evaluation_result = EvaluationResult(
-            task_id="django__django-12050",
-            instance_id="django__django-12050",
-            patch_successfully_applied=True,
-            resolved=False,
-            resolution_status="NO",
-        )
-
         evaluation_results = {
             "astropy__astropy-12907": first_evaluation_result.model_dump(exclude_none=True),
-            "django__django-12050": second_evaluation_result.model_dump(exclude_none=True),
+            "django__django-12050": None,
         }
 
         response = client.post(
