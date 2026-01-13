@@ -55,6 +55,7 @@ def health_check() -> HealthCheckResponse:
 @app.get("/verify-task-ids")
 def verify_task_ids(
     task_ids: list[str] | None = Query(default=None, description="List of task ids to verify"),
+    slice: str | None = Query(default=None, description="Slice of the dataset to verify (e.g. 3:10:1, 1:10:2)"),
 ) -> VerifyTaskIdsResponse:
     """
     Verify the task ids and return list of task ids that can be found inside of the SWE-bench benchmark service.
@@ -83,6 +84,9 @@ def verify_task_ids(
 
     if task_ids:
         task_filter.task_ids = list(dict.fromkeys(task_ids))
+
+    if slice:
+        task_filter.slice_str = slice
 
     filtered_task_ids = filter_tasks(task_filter)
 

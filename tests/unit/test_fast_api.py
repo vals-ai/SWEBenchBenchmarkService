@@ -7,7 +7,7 @@ from main import app
 from src.types import EvaluationResult
 from src.utils import load_dataset_from_disk
 
-client = TestClient(app)
+client = TestClient(app, raise_server_exceptions=False)
 
 
 class TestFastApiServer:
@@ -38,6 +38,36 @@ class TestFastApiServer:
 
         assert response.status_code == 200
         assert response.json() == {"task_ids": [row["instance_id"] for row in load_dataset_from_disk()]}  # type: ignore
+
+        # Slice with start, stop, step
+        response = client.get("/verify-task-ids", params={"slice": "3:10:1"})
+
+        assert response.status_code == 200
+        dataset = load_dataset_from_disk()
+        all_task_ids = [row["instance_id"] for row in dataset]  # type: ignore
+        expected_task_ids = all_task_ids[3:10:1]  # type: ignore
+        assert response.json() == {"task_ids": expected_task_ids}
+
+        # Slice with start, stop
+        response = client.get("/verify-task-ids", params={"slice": "3:10"})
+
+        assert response.status_code == 200
+        expected_task_ids = all_task_ids[3:10]  # type: ignore
+        assert response.json() == {"task_ids": expected_task_ids}
+
+        # Slice with start
+        response = client.get("/verify-task-ids", params={"slice": "3:"})
+
+        assert response.status_code == 200
+        expected_task_ids = all_task_ids[3:]  # type: ignore
+        assert response.json() == {"task_ids": expected_task_ids}
+
+        # Slice with stop
+        response = client.get("/verify-task-ids", params={"slice": ":10"})
+
+        assert response.status_code == 200
+        expected_task_ids = all_task_ids[:10]  # type: ignore
+        assert response.json() == {"task_ids": expected_task_ids}
 
     async def test_retrieve_task(self, setup_dataset: Path, monkeypatch: MonkeyPatch) -> None:
         monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
@@ -113,5 +143,5 @@ class TestFastApiServer:
             "metadata": {
                 "resolved_tasks": ["astropy__astropy-12907"],
                 "unresolved_tasks": ["django__django-12050"],
-            }
+            },
         }

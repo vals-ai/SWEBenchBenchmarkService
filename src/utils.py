@@ -47,19 +47,24 @@ def filter_tasks(filter: TaskFilter) -> list[str]:
     if not task_ids:
         raise ValueError(f"No tasks found in `{_DISK_PATH}`. Run `make task-setup` to download tasks.")
 
-    if not filter.task_ids:
+    if not filter.task_ids and not filter.slice_str:
         return task_ids
 
-    intersection = [task_id for task_id in filter.task_ids if task_id in task_ids]
+    if filter.task_ids:
+        task_ids = [task_id for task_id in filter.task_ids if task_id in task_ids]
 
-    if len(intersection) != len(filter.task_ids):
-        missing_task_ids = set(filter.task_ids) - set(intersection)
+        if len(task_ids) != len(filter.task_ids):
+            missing_task_ids = set(filter.task_ids) - set(task_ids)
 
-        raise ValueError(
-            f"Some task ids in the filter are not found in the tasks. Expected `{len(filter.task_ids)}` tasks, but found `{len(intersection)}`. Missing task ids: `{missing_task_ids}`."
-        )
+            raise ValueError(
+                f"Some task ids in the filter are not found in the tasks. Expected `{len(filter.task_ids)}` tasks, but found `{len(task_ids)}`. Missing task ids: `{missing_task_ids}`."
+            )
 
-    return list(intersection)
+    if filter.slice_str:
+        slice = filter.parse_slice()
+        task_ids = task_ids[slice]
+
+    return task_ids
 
 
 async def fetch_docker_image(task_id: str, skip_validation: bool = False) -> tuple[str, str, bool]:

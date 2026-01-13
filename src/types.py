@@ -3,6 +3,25 @@ from pydantic import BaseModel
 
 class TaskFilter(BaseModel):
     task_ids: list[str] | None = None
+    slice_str: str | None = None
+
+    def parse_slice(self) -> slice:
+        if not self.slice_str:
+            raise ValueError("Slice is not provided")
+
+        parts = self.slice_str.split(":")
+
+        if not 1 <= len(parts) <= 3:
+            raise ValueError("Invalid slice format")
+
+        def int_conversion(p: str) -> int | None:
+            return int(p) if p else None
+
+        while len(parts) < 3:
+            parts.append("")
+
+        start, stop, step = (int_conversion(p) for p in parts)
+        return slice(start, stop, step)
 
 
 class EvaluateInstanceRequest(BaseModel):
