@@ -47,6 +47,8 @@ def health_check() -> HealthCheckResponse:
     - 500 Internal Server Error if the server is not running
 
     """
+    logger.info("Health check endpoint request received")
+
     return HealthCheckResponse(status="ok")
 
 
@@ -73,6 +75,10 @@ def verify_task_ids(
     - 200 OK if the task ids are verified successfully
     - 500 Internal Server Error if the task ids are not verified successfully
     """
+    logger.info(
+        f"Verify task ids endpoint request received: ({len(task_ids or [])}) task ids to verify: {', '.join(task_ids[:14]) + ('...' if len(task_ids) > 14 else '') if task_ids else 'all tasks'}."
+    )
+
     task_filter = TaskFilter()
 
     if task_ids:
@@ -108,6 +114,8 @@ async def retrieve_task(
 
     """
 
+    logger.info(f"Retrieve task endpoint request received: {task_id}, {skip_validation}")
+
     docker_image, problem_statement, request_setup = await fetch_docker_image(task_id, skip_validation)
 
     return RetrieveTaskResponse(
@@ -138,6 +146,8 @@ async def setup_task(
     - 500 Internal Server Error if the task is not setup successfully
 
     """
+
+    logger.info(f"Setup task endpoint request received: {request.model_dump_json(indent=4)}")
 
     daytona = AsyncDaytona(
         config=DaytonaConfig(
@@ -204,6 +214,8 @@ async def evaluate_instance(
     - 500 Internal Server Error if the instance is not evaluated successfully
     """
 
+    logger.info(f"Evaluate instance endpoint request received: {request.model_dump_json(indent=4)}")
+
     daytona = AsyncDaytona(
         config=DaytonaConfig(
             api_key=x_api_key,
@@ -240,6 +252,10 @@ async def final_score(request: FinalScoreRequest) -> FinalScoreResponse:
     """
 
     tasks_evaluated = list(request.evaluation_results.keys())
+
+    logger.info(
+        f"Final score endpoint request received: ({len(tasks_evaluated)}) tasks evaluated: {', '.join(tasks_evaluated[:14]) + ('...' if len(tasks_evaluated) > 14 else '') if tasks_evaluated else 'no tasks evaluated'}."
+    )
 
     resolved_tasks: list[str] = []
     unresolved_tasks: list[str] = []
