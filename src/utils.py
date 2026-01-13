@@ -27,6 +27,24 @@ def load_dataset_from_disk() -> dict[str, dict[str, Any]]:
     return {row["instance_id"]: dict(row) for row in dataset}  # type: ignore
 
 
+def validate_task_ids(provided_task_ids: list[str]) -> list[str]:
+    """Validate the task ids.
+
+    Args:
+        provided_task_ids: The list of task ids to validate
+
+    Returns:
+        list[str]: The list of task ids that are valid
+    """
+    task_ids: list[str] = list(load_dataset_from_disk().keys())
+    missing_tasks = set(provided_task_ids) - set(task_ids)
+
+    if missing_tasks:
+        raise ValueError(f"{len(missing_tasks)} tasks are missing from the dataset: {', '.join(missing_tasks)}")
+
+    return provided_task_ids
+
+
 def filter_tasks(filter: TaskFilter) -> list[str]:
     """Filter tasks based on the filter type.
 

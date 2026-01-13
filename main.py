@@ -18,7 +18,14 @@ from src.types import (
     TaskFilter,
     VerifyTaskIdsResponse,
 )
-from src.utils import TaskContext, create_final_score, fetch_docker_image, filter_tasks, run_tests
+from src.utils import (
+    TaskContext,
+    create_final_score,
+    fetch_docker_image,
+    filter_tasks,
+    run_tests,
+    validate_task_ids,
+)
 
 app = FastAPI()
 
@@ -120,7 +127,9 @@ async def retrieve_task(
 
     logger.info(f"Retrieve task endpoint request received: {task_id}, {skip_validation}")
 
-    docker_image, problem_statement, request_setup = await fetch_docker_image(task_id, skip_validation)
+    validated_task_id = validate_task_ids([task_id])[0]
+
+    docker_image, problem_statement, request_setup = await fetch_docker_image(validated_task_id, skip_validation)
 
     return RetrieveTaskResponse(
         docker_image=docker_image,
@@ -220,6 +229,9 @@ async def evaluate_instance(
 
     logger.info(f"Evaluate instance endpoint request received: {request.model_dump_json(indent=4)}")
 
+    # Theres only one task id we need to validate since we are evaluating a single instance
+    validated_task_id = validate_task_ids([request.task_id])[0]
+
     daytona = AsyncDaytona(
         config=DaytonaConfig(
             api_key=x_api_key,
@@ -230,9 +242,9 @@ async def evaluate_instance(
 
     sandbox = await daytona.get(request.instance_id)
 
-    test_output: str = await run_tests(sandbox, request.task_id, request.instance_id)
+    test_output: str = await run_tests(sandbox, validated_task_id, request.instance_id)
 
-    final_result: EvaluationResult = grade_test_output(test_output, request.task_id, request.instance_id)
+    final_result: EvaluationResult = grade_test_output(test_output, validated_task_id, request.instance_id)
 
     return final_result
 
@@ -261,6 +273,9 @@ async def final_score(request: FinalScoreRequest) -> FinalScoreResponse:
         f"Final score endpoint request received: ({len(tasks_evaluated)}) tasks evaluated: {', '.join(tasks_evaluated[:14]) + ('...' if len(tasks_evaluated) > 14 else '') if tasks_evaluated else 'no tasks evaluated'}."
     )
 
+    # Validate the task ids
+    validated_task_ids = validate_task_ids(tasks_evaluated)
+
     resolved_tasks: list[str] = []
     unresolved_tasks: list[str] = []
     for task_id, evaluation_result in request.evaluation_results.items():
@@ -272,7 +287,7 @@ async def final_score(request: FinalScoreRequest) -> FinalScoreResponse:
     metadata = Metadata(resolved_tasks=resolved_tasks, unresolved_tasks=unresolved_tasks)
 
     return FinalScoreResponse(
-        tasks_evaluated=tasks_evaluated,
-        final_score=create_final_score(len(resolved_tasks), len(tasks_evaluated)),
+        tasks_evaluated=validated_task_ids,
+        final_score=create_final_score(len(resolved_tasks), len(validated_task_ids)),
         metadata=metadata,
     )
