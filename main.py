@@ -1,5 +1,3 @@
-from typing import Any
-
 from daytona import AsyncDaytona, DaytonaConfig
 from daytona.common.process import ExecuteResponse
 from fastapi import FastAPI, Header, HTTPException, Query
@@ -10,8 +8,14 @@ from src.types import (
     EvaluateResponseRequest,
     EvaluationResult,
     FinalScoreRequest,
+    FinalScoreResponse,
+    HealthCheckResponse,
+    Metadata,
+    RetrieveTaskResponse,
     SetupTaskRequest,
+    SetupTaskResponse,
     TaskFilter,
+    VerifyTaskIdsResponse,
 )
 from src.utils import TaskContext, create_final_score, fetch_docker_image, filter_tasks, run_tests
 
@@ -19,7 +23,7 @@ app = FastAPI()
 
 
 @app.get("/health")
-def health_check():
+def health_check() -> HealthCheckResponse:
     """
     Health check to ensure that we are able to connect to the server.
 
@@ -34,11 +38,13 @@ def health_check():
     - 500 Internal Server Error if the server is not running
 
     """
-    return {"status": "ok"}
+    return HealthCheckResponse(status="ok")
 
 
 @app.get("/verify-task-ids")
-def verify_task_ids(task_ids: list[str] | None = Query(default=None, description="List of task ids to verify")):
+def verify_task_ids(
+    task_ids: list[str] | None = Query(default=None, description="List of task ids to verify"),
+) -> VerifyTaskIdsResponse:
     """
     Verify the task ids and return list of task ids that can be found inside of the SWE-bench benchmark service.
     Used later to request tasks from the SWE-bench benchmark service.
@@ -66,7 +72,7 @@ def verify_task_ids(task_ids: list[str] | None = Query(default=None, description
 
         filtered_task_ids = filter_tasks(task_filter)
 
-        return {"task_ids": filtered_task_ids}
+        return VerifyTaskIdsResponse(task_ids=filtered_task_ids)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -75,7 +81,7 @@ def verify_task_ids(task_ids: list[str] | None = Query(default=None, description
 async def retrieve_task(
     task_id: str = Query(..., description="Task id to retrieve"),
     skip_validation: bool = Query(False, description="Skip validation of the docker image"),
-) -> dict[str, Any]:
+) -> RetrieveTaskResponse:
     """
     Returns the docker image and metadata for a single task.
 
@@ -98,11 +104,11 @@ async def retrieve_task(
     try:
         docker_image, problem_statement, request_setup = await fetch_docker_image(task_id, skip_validation)
 
-        return {
-            "docker_image": docker_image,
-            "problem_statement": problem_statement,
-            "request_setup": request_setup,
-        }
+        return RetrieveTaskResponse(
+            docker_image=docker_image,
+            problem_statement=problem_statement,
+            request_setup=request_setup,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -113,7 +119,7 @@ async def setup_task(
     x_api_key: str = Header(...),
     x_api_url: str = Header(...),
     x_target: str = Header(...),
-) -> dict[str, str]:
+) -> SetupTaskResponse:
     """
     Setup the task by running the setup script for the task.
 
@@ -153,7 +159,7 @@ async def setup_task(
         if result.exit_code != 0:
             raise HTTPException(status_code=500, detail=result.result)
 
-        return {"status": "ok"}
+        return SetupTaskResponse(status="ok")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -165,13 +171,13 @@ def evaluate_response(_request: EvaluateResponseRequest):
     )
 
 
-@app.post("/evaluate-instance/")
+@app.post("/evaluate-instance/", response_model_exclude_none=True)
 async def evaluate_instance(
     request: EvaluateInstanceRequest,
     x_api_key: str = Header(...),
     x_api_url: str = Header(...),
     x_target: str = Header(...),
-) -> dict[str, Any]:
+) -> EvaluationResult:
     """
     Executes tests and grades the results for an instance.
 
@@ -210,24 +216,22 @@ async def evaluate_instance(
 
         final_result: EvaluationResult = grade_test_output(test_output, request.task_id, request.instance_id)
 
-        return final_result.model_dump(exclude_none=True)
+        return final_result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/final-score/")
-async def final_score(request: FinalScoreRequest) -> dict[str, Any]:
+async def final_score(request: FinalScoreRequest) -> FinalScoreResponse:
     """
-    Takes the evaluation results and produces a json containing the final score and evaluation metadata.
+    Takes the evaluation results and produces a FinalScoreResponse containing the final score and evaluation metadata.
 
     Usage
     curl -X POST http://<endpoint>/final-score -H "Content-Type: application/json" -d '{"evaluation_results": {"task_id_1": {"resolved": true...}, "task_id_2": {"resolved": false...}}}'
     {
         "tasks_evaluated": ["task_id_1", "task_id_2"],
         "final_score": 50.0,
-        "resolved_tasks": ["task_id_1"],
-        "unresolved_tasks": ["task_id_2"],
-        "evaluation_results": {"task_id_1": {"resolved": true...}, "task_id_2": {"resolved": false...}}
+        "metadata": {"resolved_tasks": ["task_id_1"], "unresolved_tasks": ["task_id_2"]}
     }
 
     Returns:
@@ -245,12 +249,12 @@ async def final_score(request: FinalScoreRequest) -> dict[str, Any]:
             else:
                 unresolved_tasks.append(task_id)
 
-        return {
-            "tasks_evaluated": tasks_evaluated,
-            "final_score": create_final_score(len(resolved_tasks), len(tasks_evaluated)),
-            "resolved_tasks": resolved_tasks,
-            "unresolved_tasks": unresolved_tasks,
-            **request.model_dump(exclude_none=True),
-        }
+        metadata = Metadata(resolved_tasks=resolved_tasks, unresolved_tasks=unresolved_tasks)
+
+        return FinalScoreResponse(
+            tasks_evaluated=tasks_evaluated,
+            final_score=create_final_score(len(resolved_tasks), len(tasks_evaluated)),
+            metadata=metadata,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

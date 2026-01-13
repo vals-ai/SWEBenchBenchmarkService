@@ -35,3 +35,36 @@ class EvaluationResult(BaseModel):
 
 class FinalScoreRequest(BaseModel):
     evaluation_results: dict[str, EvaluationResult | None]
+
+
+class Metadata(BaseModel):
+    resolved_tasks: list[str]
+    unresolved_tasks: list[str]
+
+
+class FinalScoreResponse(BaseModel):
+    tasks_evaluated: list[str]
+    final_score: float
+    metadata: Metadata
+
+
+class StatusResponse(BaseModel):
+    status: str
+
+
+class SetupTaskResponse(StatusResponse):
+    pass
+
+
+class HealthCheckResponse(StatusResponse):
+    pass
+
+
+class RetrieveTaskResponse(BaseModel):
+    docker_image: str
+    problem_statement: str
+    request_setup: bool
+
+
+class VerifyTaskIdsResponse(BaseModel):
+    task_ids: list[str]

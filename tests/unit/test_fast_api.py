@@ -110,7 +110,8 @@ class TestFastApiServer:
         assert response.json() == {
             "tasks_evaluated": ["astropy__astropy-12907", "django__django-12050"],
             "final_score": round(50.0, 6),
-            "resolved_tasks": ["astropy__astropy-12907"],
-            "unresolved_tasks": ["django__django-12050"],
-            "evaluation_results": evaluation_results,
+            "metadata": {
+                "resolved_tasks": ["astropy__astropy-12907"],
+                "unresolved_tasks": ["django__django-12050"],
+            }
         }
