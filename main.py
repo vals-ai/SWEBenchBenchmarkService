@@ -1,8 +1,9 @@
 from daytona import AsyncDaytona, DaytonaConfig
 from daytona.common.process import ExecuteResponse
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 
 from src.evaluation import grade_test_output
+from src.logger import get_logger
 from src.types import (
     EvaluateInstanceRequest,
     EvaluateResponseRequest,
@@ -20,6 +21,14 @@ from src.types import (
 from src.utils import TaskContext, create_final_score, fetch_docker_image, filter_tasks, run_tests
 
 app = FastAPI()
+
+logger = get_logger(__name__)
+
+
+@app.exception_handler(Exception)
+async def exception_handler(_request: Request, exc: Exception):
+    logger.error(exc, exc_info=True)
+    raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/health")
@@ -64,17 +73,14 @@ def verify_task_ids(
     - 200 OK if the task ids are verified successfully
     - 500 Internal Server Error if the task ids are not verified successfully
     """
-    try:
-        task_filter = TaskFilter()
+    task_filter = TaskFilter()
 
-        if task_ids:
-            task_filter.task_ids = list(dict.fromkeys(task_ids))
+    if task_ids:
+        task_filter.task_ids = list(dict.fromkeys(task_ids))
 
-        filtered_task_ids = filter_tasks(task_filter)
+    filtered_task_ids = filter_tasks(task_filter)
 
-        return VerifyTaskIdsResponse(task_ids=filtered_task_ids)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return VerifyTaskIdsResponse(task_ids=filtered_task_ids)
 
 
 @app.get("/retrieve-task/")
@@ -101,16 +107,14 @@ async def retrieve_task(
     - 500 Internal Server Error if the task is not retrieved successfully
 
     """
-    try:
-        docker_image, problem_statement, request_setup = await fetch_docker_image(task_id, skip_validation)
 
-        return RetrieveTaskResponse(
-            docker_image=docker_image,
-            problem_statement=problem_statement,
-            request_setup=request_setup,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    docker_image, problem_statement, request_setup = await fetch_docker_image(task_id, skip_validation)
+
+    return RetrieveTaskResponse(
+        docker_image=docker_image,
+        problem_statement=problem_statement,
+        request_setup=request_setup,
+    )
 
 
 @app.post("/setup-task")
@@ -134,34 +138,32 @@ async def setup_task(
     - 500 Internal Server Error if the task is not setup successfully
 
     """
-    try:
-        daytona = AsyncDaytona(
-            config=DaytonaConfig(
-                api_key=x_api_key,
-                api_url=x_api_url,
-                target=x_target,
-            )
+
+    daytona = AsyncDaytona(
+        config=DaytonaConfig(
+            api_key=x_api_key,
+            api_url=x_api_url,
+            target=x_target,
         )
+    )
 
-        task_context = TaskContext(request.task_id)
+    task_context = TaskContext(request.task_id)
 
-        sandbox = await daytona.get(request.instance_id)
+    sandbox = await daytona.get(request.instance_id)
 
-        await sandbox.fs.upload_file(
-            "setup.sh",
-            "/setup.sh",
-        )
+    await sandbox.fs.upload_file(
+        "setup.sh",
+        "/setup.sh",
+    )
 
-        result: ExecuteResponse = await sandbox.process.exec(
-            command=f"chmod +x /setup.sh && bash /setup.sh {task_context.base_commit}",
-        )
+    result: ExecuteResponse = await sandbox.process.exec(
+        command=f"chmod +x /setup.sh && bash /setup.sh {task_context.base_commit}",
+    )
 
-        if result.exit_code != 0:
-            raise HTTPException(status_code=500, detail=result.result)
+    if result.exit_code != 0:
+        raise HTTPException(status_code=500, detail=result.result)
 
-        return SetupTaskResponse(status="ok")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return SetupTaskResponse(status="ok")
 
 
 @app.post("/evaluate-response/")
@@ -201,24 +203,22 @@ async def evaluate_instance(
     - 200 OK if the instance is evaluated successfully
     - 500 Internal Server Error if the instance is not evaluated successfully
     """
-    try:
-        daytona = AsyncDaytona(
-            config=DaytonaConfig(
-                api_key=x_api_key,
-                api_url=x_api_url,
-                target=x_target,
-            )
+
+    daytona = AsyncDaytona(
+        config=DaytonaConfig(
+            api_key=x_api_key,
+            api_url=x_api_url,
+            target=x_target,
         )
+    )
 
-        sandbox = await daytona.get(request.instance_id)
+    sandbox = await daytona.get(request.instance_id)
 
-        test_output: str = await run_tests(sandbox, request.task_id, request.instance_id)
+    test_output: str = await run_tests(sandbox, request.task_id, request.instance_id)
 
-        final_result: EvaluationResult = grade_test_output(test_output, request.task_id, request.instance_id)
+    final_result: EvaluationResult = grade_test_output(test_output, request.task_id, request.instance_id)
 
-        return final_result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return final_result
 
 
 @app.post("/final-score/")
@@ -238,23 +238,21 @@ async def final_score(request: FinalScoreRequest) -> FinalScoreResponse:
     - 200 OK if the final score is calculated successfully
     - 500 Internal Server Error if the final score is not calculated successfully
     """
-    try:
-        tasks_evaluated = list(request.evaluation_results.keys())
 
-        resolved_tasks: list[str] = []
-        unresolved_tasks: list[str] = []
-        for task_id, evaluation_result in request.evaluation_results.items():
-            if evaluation_result and evaluation_result.resolved:
-                resolved_tasks.append(task_id)
-            else:
-                unresolved_tasks.append(task_id)
+    tasks_evaluated = list(request.evaluation_results.keys())
 
-        metadata = Metadata(resolved_tasks=resolved_tasks, unresolved_tasks=unresolved_tasks)
+    resolved_tasks: list[str] = []
+    unresolved_tasks: list[str] = []
+    for task_id, evaluation_result in request.evaluation_results.items():
+        if evaluation_result and evaluation_result.resolved:
+            resolved_tasks.append(task_id)
+        else:
+            unresolved_tasks.append(task_id)
 
-        return FinalScoreResponse(
-            tasks_evaluated=tasks_evaluated,
-            final_score=create_final_score(len(resolved_tasks), len(tasks_evaluated)),
-            metadata=metadata,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    metadata = Metadata(resolved_tasks=resolved_tasks, unresolved_tasks=unresolved_tasks)
+
+    return FinalScoreResponse(
+        tasks_evaluated=tasks_evaluated,
+        final_score=create_final_score(len(resolved_tasks), len(tasks_evaluated)),
+        metadata=metadata,
+    )
