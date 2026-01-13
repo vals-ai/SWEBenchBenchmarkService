@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pytest
 import pytest_asyncio
@@ -157,9 +157,9 @@ class TestDaytona:
     ) -> None:
         monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
 
-        dataset = load_dataset_from_disk()
+        dataset_map = load_dataset_from_disk()
 
-        assert len(dataset) == 500, "Expected 500 tasks to be available"
+        assert len(dataset_map) == 500, "Expected 500 tasks to be available"
 
         semaphore = asyncio.Semaphore(20)
 
@@ -174,7 +174,7 @@ class TestDaytona:
                     return task_id, str(e), False
 
         results: list[tuple[str, str, bool]] = await asyncio.gather(
-            *[build_image(task_id=task["instance_id"]) for task in dataset]  # type: ignore
+            *[build_image(task_id=task_id) for task_id in dataset_map.keys()]
         )
 
         errors: list[str] = []
@@ -423,8 +423,8 @@ class TestDaytona:
 
         monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
 
-        dataset = load_dataset_from_disk()
-        task_ids: list[str] = cast(list[str], [row["instance_id"] for row in dataset])  # type: ignore
+        dataset_map = load_dataset_from_disk()
+        task_ids: list[str] = list(dataset_map.keys())
 
         response = await test_client.request_health_check()
         assert response == {"status": "ok"}, "Expected health check to return ok"

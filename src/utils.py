@@ -1,9 +1,10 @@
 import asyncio
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, AsyncGenerator
 
-from datasets import Dataset, load_from_disk  # type: ignore
+from datasets import load_from_disk  # type: ignore
 from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, ExecuteResponse, Image, Resources
 from swebench.harness.test_spec.test_spec import TestSpec, make_test_spec
 
@@ -15,8 +16,15 @@ logger = get_logger(__name__)
 _DISK_PATH: Path = Path("/tmp/swe-bench-verified")
 
 
-def load_dataset_from_disk() -> Dataset:
-    return load_from_disk(_DISK_PATH)  # type: ignore
+@lru_cache(maxsize=None)
+def load_dataset_from_disk() -> dict[str, dict[str, Any]]:
+    """Load the dataset from disk and return a mapping of instance_id to row data.
+
+    Returns:
+        dict[str, dict[str, Any]]: A dictionary mapping instance_id to the corresponding dataset row
+    """
+    dataset = load_from_disk(_DISK_PATH)  # type: ignore
+    return {row["instance_id"]: dict(row) for row in dataset}  # type: ignore
 
 
 def filter_tasks(filter: TaskFilter) -> list[str]:
@@ -38,9 +46,9 @@ def filter_tasks(filter: TaskFilter) -> list[str]:
             f"SWE-bench tasks not found at `{_DISK_PATH}`. Run `make task-setup` to download tasks."
         )
 
-    dataset = load_dataset_from_disk()
+    dataset_map = load_dataset_from_disk()
 
-    task_ids: list[str] = [row["instance_id"] for row in dataset]  # type: ignore
+    task_ids: list[str] = list(dataset_map.keys())
 
     print(f"Found `{len(task_ids)}` tasks in `{_DISK_PATH}`")
 
@@ -51,7 +59,7 @@ def filter_tasks(filter: TaskFilter) -> list[str]:
         return task_ids
 
     if filter.task_ids:
-        task_ids = [task_id for task_id in filter.task_ids if task_id in task_ids]
+        task_ids = [task_id for task_id in filter.task_ids if task_id in dataset_map]
 
         if len(task_ids) != len(filter.task_ids):
             missing_task_ids = set(filter.task_ids) - set(task_ids)
@@ -110,12 +118,11 @@ class TaskContext:
 
     @property
     def _row(self) -> dict[str, Any]:
-        dataset = load_dataset_from_disk()
-        row = dataset.filter(lambda x: x["instance_id"] == self._task_id)  # type: ignore
-        if not row:
+        dataset_map = load_dataset_from_disk()
+        if self._task_id not in dataset_map:
             raise ValueError(f"Task `{self._task_id}` not found in dataset")
 
-        return row[0]  # type: ignore
+        return dataset_map[self._task_id]
 
     @property
     def problem_statement(self) -> str:
@@ -189,12 +196,11 @@ async def create_sandbox(daytona: AsyncDaytona, sandbox_name: str, image: str) -
 
 
 def fetch_test_spec(task_id: str) -> TestSpec:
-    dataset = load_dataset_from_disk()
-    row = dataset.filter(lambda x: x["instance_id"] == task_id)  # type: ignore
-    if not row:
+    dataset_map = load_dataset_from_disk()
+    if task_id not in dataset_map:
         raise ValueError(f"Task `{task_id}` not found in dataset")
 
-    return make_test_spec(row[0])  # type: ignore
+    return make_test_spec(dataset_map[task_id])  # type: ignore
 
 
 async def fetch_patch(sandbox: AsyncSandbox) -> str:

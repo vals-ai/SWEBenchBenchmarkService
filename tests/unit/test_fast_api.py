@@ -37,14 +37,14 @@ class TestFastApiServer:
         response = client.get("/verify-task-ids")
 
         assert response.status_code == 200
-        assert response.json() == {"task_ids": [row["instance_id"] for row in load_dataset_from_disk()]}  # type: ignore
+        assert response.json() == {"task_ids": list(load_dataset_from_disk().keys())}  # type: ignore
 
         # Slice with start, stop, step
         response = client.get("/verify-task-ids", params={"slice": "3:10:1"})
 
         assert response.status_code == 200
-        dataset = load_dataset_from_disk()
-        all_task_ids = [row["instance_id"] for row in dataset]  # type: ignore
+        dataset_map = load_dataset_from_disk()
+        all_task_ids = list(dataset_map.keys())
         expected_task_ids = all_task_ids[3:10:1]  # type: ignore
         assert response.json() == {"task_ids": expected_task_ids}
 
@@ -78,10 +78,8 @@ class TestFastApiServer:
 
         response = client.get("/retrieve-task/", params={"task_id": valid_task_id})
 
-        dataset = load_dataset_from_disk()
-        problem_statement: str = dataset.filter(lambda x: x["instance_id"] == valid_task_id)[0].get(  # type: ignore
-            "problem_statement", ""
-        )
+        dataset_map = load_dataset_from_disk()
+        problem_statement: str = dataset_map[valid_task_id].get("problem_statement", "")
 
         assert response.status_code == 200
 
@@ -99,9 +97,7 @@ class TestFastApiServer:
 
         response = client.get("/retrieve-task/", params={"task_id": "django__django-12050"})
 
-        problem_statement_django: str = dataset.filter(lambda x: x["instance_id"] == "django__django-12050")[0].get(  # type: ignore
-            "problem_statement", ""
-        )
+        problem_statement_django: str = dataset_map["django__django-12050"].get("problem_statement", "")
 
         expected_response_django: dict[str, str | bool] = {
             "docker_image": registry_image_format.format(instance_id="django__django-12050"),

@@ -21,6 +21,6 @@ class TestSetup:
         monkeypatch.setattr("src.utils._DISK_PATH", task_directory)
 
         # Task directory asserts
-        dataset = load_dataset_from_disk()
+        dataset_map = load_dataset_from_disk()
 
-        assert len(dataset) == 500, "Expected 500 tasks to be available"
+        assert len(dataset_map) == 500, "Expected 500 tasks to be available"
