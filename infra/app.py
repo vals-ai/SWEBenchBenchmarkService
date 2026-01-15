@@ -28,8 +28,8 @@ class FastApiStack(Stack):
         task_def = aws_ecs.FargateTaskDefinition(
             self,
             f"{self._SERVICE_NAME}TaskDef",
-            cpu=256,
-            memory_limit_mib=512,
+            cpu=1024,
+            memory_limit_mib=2048,
         )
 
         _ = task_def.add_container(
