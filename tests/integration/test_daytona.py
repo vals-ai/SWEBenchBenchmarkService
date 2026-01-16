@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
@@ -9,21 +10,18 @@ import pytest_asyncio
 from daytona import (
     AsyncDaytona,
     AsyncSandbox,
-    CreateSandboxFromSnapshotParams,
-    CreateSnapshotParams,
+    CreateSandboxFromImageParams,
     DaytonaConfig,
     Image,
     Resources,
-    SessionExecuteRequest,
 )
-from daytona.common.snapshot import Snapshot
 from dotenv import load_dotenv
 from pytest import MonkeyPatch
 
 from main import app
 from src.logger import get_logger
 from src.utils import TaskContext, apply_patch, create_sandbox, fetch_patch, load_dataset_from_disk
-from tests.utils import BenchmarkServiceTestClient, build_task_environment, get_session_logger
+from tests.utils import BenchmarkServiceTestClient, build_task_environment
 
 logger = get_logger(__name__)
 
@@ -31,72 +29,33 @@ load_dotenv()
 
 
 @pytest_asyncio.fixture
-async def daytona() -> AsyncDaytona:
-    return AsyncDaytona(
-        config=DaytonaConfig(
-            api_key=os.getenv("DAYTONA_API_KEY"),
-            api_url=os.getenv("DAYTONA_API_URL"),
-            target=os.getenv("DAYTONA_TARGET"),
-        )
+async def daytona() -> AsyncGenerator[AsyncDaytona, None]:
+    config = DaytonaConfig(
+        api_key=os.getenv("DAYTONA_API_KEY"),
+        api_url=os.getenv("DAYTONA_API_URL"),
+        target=os.getenv("DAYTONA_TARGET"),
     )
+
+    async with AsyncDaytona(config) as daytona:
+        yield daytona
 
 
 @pytest_asyncio.fixture
-async def base_snapshot(daytona: AsyncDaytona):
-    snapshot_name = "swebench.benchmark.service"
-
-    try:
-        snapshot: Snapshot = await daytona.snapshot.get(snapshot_name)
-
-        return snapshot
-    except Exception:
-        pass
-
-    snapshot = await daytona.snapshot.create(
-        CreateSnapshotParams(
+async def sandbox(daytona: AsyncDaytona):
+    sandbox = await daytona.create(
+        CreateSandboxFromImageParams(
             image=Image.from_dockerfile("Dockerfile"),
-            name=snapshot_name,
-            resources=Resources(cpu=4, memory=8, disk=10),
+            name="swebench.benchmark.service",
+            network_block_all=False,
+            resources=Resources(cpu=2, memory=4, disk=5),
         ),
-        on_logs=lambda logs: logger.info(logs),
         timeout=360,
     )
-
-    return snapshot
-
-
-@pytest_asyncio.fixture
-async def sandbox(daytona: AsyncDaytona, base_snapshot: Snapshot):
-    sandbox = await daytona.create(
-        CreateSandboxFromSnapshotParams(
-            snapshot=base_snapshot.name,
-            network_block_all=False,
-        ),
-    )
-
-    await sandbox.process.create_session(sandbox.id)
-
-    logger.info("Starting FastAPI server...")
-    response = await sandbox.process.execute_session_command(
-        sandbox.id,
-        SessionExecuteRequest(
-            command="cd /app && nohup uv run fastapi dev main.py --host 0.0.0.0 > /tmp/server.log 2>&1",
-            runAsync=True,
-        ),
-    )
-
-    if not response.cmd_id:
-        raise Exception("No command id returned from execute session command")
-
-    log_task = await get_session_logger(sandbox, sandbox.id, response.cmd_id, logger)
-
-    await asyncio.sleep(20)
 
     try:
         yield sandbox
     finally:
         await sandbox.delete()
-        log_task.cancel()
 
 
 @pytest.fixture
@@ -203,6 +162,14 @@ class TestDaytona:
         async with create_sandbox(daytona, task_id, task_context.docker_image) as sandbox:
             # Setup task environment, ensuring we are on the correct base commit
             await test_client.request_setup_task(task_id=task_id, instance_id=sandbox.id)
+
+            # Check that the testbed is the ROOT environment variable
+            root_result = await sandbox.process.exec(
+                command="echo $ROOT",
+                cwd="/",
+            )
+
+            assert root_result.result.strip() == "/testbed"
 
             # Verify we are on the correct commit (validates that the setup script worked)
             verify_result = await sandbox.process.exec(

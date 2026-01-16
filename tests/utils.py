@@ -6,7 +6,7 @@ from asyncio import Task
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, Image, Resources
+from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, Resources
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -158,11 +158,10 @@ async def build_task_environment(
     Builds the task environment using the dockerfile path
     """
 
-    task_image = Image.base(docker_image)
     sandbox = await daytona.create(
         CreateSandboxFromImageParams(
             env_vars={"TEST_DIR": "/tests"},
-            image=task_image,
+            image=docker_image,
             name=task_id,
             network_block_all=False,
             resources=Resources(cpu=4, memory=8, disk=10),
