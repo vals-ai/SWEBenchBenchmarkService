@@ -1,0 +1,149 @@
+diff --git a/BUGFIX_SUMMARY.md b/BUGFIX_SUMMARY.md
+new file mode 100644
+index 0000000000..3211d03ad7
+--- /dev/null
++++ b/BUGFIX_SUMMARY.md
+@@ -0,0 +1,68 @@
++# Bug Fix: separability_matrix for Nested CompoundModels
++
++## Summary
++Fixed a bug in `astropy.modeling.separable.separability_matrix()` where nested `CompoundModel` instances would incorrectly report outputs as coupled when they should be separable.
++
++## The Issue
++When creating compound models using the `&` operator and nesting them, the separability matrix would incorrectly show all outputs of the nested model as coupled (dependent on all inputs), even when they were actually independent.
++
++### Example
++```python
++from astropy.modeling import models as m
++from astropy.modeling.separable import separability_matrix
++
++# Create a nested compound model
++cm = m.Linear1D(10) & m.Linear1D(5)  # Two independent linear models
++nested = m.Pix2Sky_TAN() & cm
++
++# Before fix: Returns
++# [[True,  True,  False, False],
++#  [True,  True,  False, False],
++#  [False, False, True,  True],   <- WRONG! Should be [False, False, True, False]
++#  [False, False, True,  True]]   <- WRONG! Should be [False, False, False, True]
++
++# After fix: Returns (correct)
++# [[True,  True,  False, False],
++#  [True,  True,  False, False],
++#  [False, False, True,  False],  <- Correct!
++#  [False, False, False, True]]   <- Correct!
++```
++
++## Root Cause
++In the `_cstack()` function (line 245 of `astropy/modeling/separable.py`), when the right operand was already a numpy array (from a nested CompoundModel's separability matrix), the code was incorrectly filling the result matrix with `1` instead of copying the actual matrix values.
++
++## The Fix
++**File**: `astropy/modeling/separable.py`
++**Line**: 245
++
++### Before
++```python
++cright[-right.shape[0]:, -right.shape[1]:] = 1
++```
++
++### After
++```python
++cright[-right.shape[0]:, -right.shape[1]:] = right
++```
++
++This simple one-character change ensures that when combining separability matrices, the actual matrix values are preserved rather than being replaced with all 1s.
++
++## Testing
++Added comprehensive test case `test_nested_compound_models()` in `astropy/modeling/tests/test_separable.py` that covers:
++- Simple nested compound models
++- Nesting with non-separable models on the left
++- Nesting with non-separable models on the right
++- Double nesting (both sides are nested compound models)
++- Complex multi-level nesting
++
++All existing tests continue to pass.
++
++## Impact
++- **Breaking Changes**: None
++- **Backward Compatibility**: Fully maintained
++- **Performance**: No impact
++- **Affected Code**: Only the `separability_matrix()` function for nested CompoundModels
++
++## Related Files
++- `astropy/modeling/separable.py` - Main fix
++- `astropy/modeling/tests/test_separable.py` - New test cases
+diff --git a/astropy/modeling/separable.py b/astropy/modeling/separable.py
+index a308e27297..45bea36085 100644
+--- a/astropy/modeling/separable.py
++++ b/astropy/modeling/separable.py
+@@ -242,7 +242,7 @@ def _cstack(left, right):
+         cright = _coord_matrix(right, 'right', noutp)
+     else:
+         cright = np.zeros((noutp, right.shape[1]))
+-        cright[-right.shape[0]:, -right.shape[1]:] = 1
++        cright[-right.shape[0]:, -right.shape[1]:] = right
+ 
+     return np.hstack([cleft, cright])
+ 
+diff --git a/astropy/modeling/tests/test_separable.py b/astropy/modeling/tests/test_separable.py
+index 8dfe5c8626..cfd9f43964 100644
+--- a/astropy/modeling/tests/test_separable.py
++++ b/astropy/modeling/tests/test_separable.py
+@@ -148,3 +148,57 @@ def test_custom_model_separable():
+ 
+     assert not model_c().separable
+     assert np.all(separability_matrix(model_c()) == [True, True])
++
++
++def test_nested_compound_models():
++    """Test that nested compound models have correct separability.
++
++    Regression test for issue where nested CompoundModels would
++    incorrectly report all outputs as coupled.
++    """
++    # Create a simple nested compound model
++    cm = models.Linear1D(10) & models.Linear1D(5)
++
++    # The nested model should have diagonal separability
++    result = separability_matrix(cm)
++    expected = np.array([[True, False], [False, True]])
++    assert_allclose(result, expected)
++
++    # Test nesting with a non-separable model on the left
++    nested = models.Pix2Sky_TAN() & cm
++    result = separability_matrix(nested)
++    expected = np.array([
++        [True, True, False, False],
++        [True, True, False, False],
++        [False, False, True, False],
++        [False, False, False, True]
++    ])
++    assert_allclose(result, expected)
++
++    # Test nesting with a non-separable model on the right
++    nested_reverse = cm & models.Pix2Sky_TAN()
++    result = separability_matrix(nested_reverse)
++    expected = np.array([
++        [True, False, False, False],
++        [False, True, False, False],
++        [False, False, True, True],
++        [False, False, True, True]
++    ])
++    assert_allclose(result, expected)
++
++    # Test double nesting - both sides are nested compound models
++    nested_left = models.Linear1D(1) & models.Linear1D(2)
++    nested_right = models.Linear1D(3) & models.Linear1D(4)
++    doubly_nested = nested_left & nested_right
++    result = separability_matrix(doubly_nested)
++    expected = np.eye(4, dtype=bool)
++    assert_allclose(result, expected)
++
++    # Test more complex nesting
++    complex_model = models.Pix2Sky_TAN() & models.Linear1D(10) & models.Linear1D(5)
++    nested_complex = models.Pix2Sky_TAN() & (models.Linear1D(10) & models.Linear1D(5))
++
++    # Both should give the same result
++    result_flat = separability_matrix(complex_model)
++    result_nested = separability_matrix(nested_complex)
++    assert_allclose(result_flat, result_nested)
