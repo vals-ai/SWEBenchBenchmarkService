@@ -1,5 +1,17 @@
 {
   "acknowledged-issue-numbers": [
     34892
-  ]
+  ],
+  "availability-zones:account=613431292675:region=us-east-1": [
+    "us-east-1a",
+    "us-east-1b",
+    "us-east-1c",
+    "us-east-1d",
+    "us-east-1e",
+    "us-east-1f"
+  ],
+  "hosted-zone:account=613431292675:domainName=vals.ai:region=us-east-1": {
+    "Id": "/hostedzone/Z047985721WA50ZRLCDNC",
+    "Name": "vals.ai."
+  }
 }
