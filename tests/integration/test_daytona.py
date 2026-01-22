@@ -94,6 +94,12 @@ class TestDaytona:
             "/tmp/patch.diff",
         )
 
+        # Ensure newline exists at the end of the patch file
+        await sandbox.process.exec(
+            command="tail -c1 /tmp/patch.diff 2>/dev/null | grep -q $'\n' || printf '\n' >> /tmp/patch.diff",
+            cwd="/",
+        )
+
         # Apply the solution patch to the testbed
         try:
             await apply_patch(sandbox, "/tmp/patch.diff")
@@ -444,3 +450,88 @@ class TestDaytona:
                 not_resolved.append(f"Task `{result['instance_id']}`: {result['resolution_status']}")
 
         assert len(not_resolved) == 0, f"{' \n'.join(not_resolved)}"
+
+    async def test_patch_regression(
+        self,
+        daytona: AsyncDaytona,
+        setup_dataset: Path,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """
+        Regression test for patch creation and application.
+
+        NOTE: Prevents bug case where patch file is not created with a newline at the end.
+        """
+
+        if not setup_dataset.exists():
+            pytest.fail(f"Setup dataset path {setup_dataset} does not exist")
+
+        monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
+
+        task_id: str = "astropy__astropy-12907"
+        task_context = TaskContext(task_id)
+
+        async with create_sandbox(daytona, task_id, task_context.docker_image) as sandbox:
+            # Apply the patch file for this test (has newline so its applicable)
+            with open("tests/files/patch.diff", "r") as f:
+                patch = f.read()
+
+            await sandbox.fs.upload_file(
+                patch.encode("utf-8"),
+                "/tmp/patch.diff",
+            )
+
+            # Apply the patch file (test setup)
+            try:
+                await apply_patch(sandbox, "/tmp/patch.diff")
+
+                pytest.fail("Expected error since patch file has no newline at the end")
+            except Exception:
+                pass
+
+            # Apply newline at the end of the patch file
+            await sandbox.process.exec(
+                command="echo >> /tmp/patch.diff",
+                cwd="/",
+            )
+
+            # Reapply the patch file (works now)
+            try:
+                await apply_patch(sandbox, "/tmp/patch.diff")
+            except Exception:
+                pytest.fail("Expected patch to be applied successfully")
+
+            # Delete the patch file inside of /tmp
+            await sandbox.fs.delete_file("/tmp/patch.diff")
+
+            # Use production script to create patch file inside of /tmp
+            await create_patch_file(sandbox)
+
+            # Verify that the patch file exists
+            result = await sandbox.process.exec(
+                command="test -f /tmp/patch.diff",
+                cwd="/",
+            )
+            assert result.exit_code == 0, f"Expected patch file to exist: {result.result}"
+
+            # Verify that the patch contains a newline at the end
+            result = await sandbox.process.exec(
+                command="tail -c1 /tmp/patch.diff 2>/dev/null | grep -q $'\n'",
+                cwd="/",
+            )
+            assert result.exit_code == 0, f"Expected patch file to contain a newline at the end: {result.result}"
+
+            await sandbox.process.exec(
+                command="git reset --hard HEAD && git clean -fd",
+                cwd="/testbed",
+            )
+
+            # Apply the patch file
+            try:
+                await apply_patch(sandbox, "/tmp/patch.diff")
+            except Exception as e:
+                pytest.fail(f"Failed to apply patch for test {task_id}: {e}")
+
+            # Verify that the patch was applied successfully
+            diff = await self._git_diff(sandbox)
+            assert diff, "Expected diff to be applied to the testbed"
