@@ -221,16 +221,25 @@ def fetch_test_spec(task_id: str) -> TestSpec:
     return make_test_spec(dataset_map[task_id])  # type: ignore
 
 
-async def fetch_patch(sandbox: AsyncSandbox) -> str:
-    patch = await sandbox.process.exec(
-        command="git add -A && git diff --cached",
+async def create_patch_file(sandbox: AsyncSandbox) -> None:
+    # Create directory /tmp if it doesn't exist
+    await sandbox.fs.create_folder("/tmp", "755")
+
+    # Create the patch file inside of /tmp
+    result: ExecuteResponse = await sandbox.process.exec(
+        command="git add -A && git diff --cached > /tmp/patch.diff",
         cwd="/testbed",
     )
 
-    if patch.exit_code != 0:
-        raise ValueError(f"Error fetching patch: {patch.result}")
+    # If the command failed, raise an error
+    if result.exit_code != 0:
+        raise ValueError(f"Error fetching patch: {result.result}")
 
-    return patch.result
+    # Ensure that a newline exists at the end of the patch file
+    await sandbox.process.exec(
+        command="tail -c1 /tmp/patch.diff 2>/dev/null | grep -q $'\n' || printf '\n' >> /tmp/patch.diff",
+        cwd="/",
+    )
 
 
 async def apply_patch(sandbox: AsyncSandbox, patch_path: str) -> str:
@@ -277,14 +286,8 @@ def create_run_command(instance_id: str) -> str:
 
 
 async def run_tests(sandbox: AsyncSandbox, task_id: str, instance_id: str) -> str:
-    # Fetch the patch from the container
-    container_patch = await fetch_patch(sandbox)
-
-    # Save the patch to /tmp/patch.diff
-    await sandbox.fs.upload_file(
-        container_patch.encode("utf-8"),
-        "/tmp/patch.diff",
-    )
+    # Create the patch file inside of /tmp
+    await create_patch_file(sandbox)
 
     # Reset the current state of the repository to the base commit
     await sandbox.process.exec(

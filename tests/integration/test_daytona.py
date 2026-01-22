@@ -20,7 +20,7 @@ from pytest import MonkeyPatch
 
 from main import app
 from src.logger import get_logger
-from src.utils import TaskContext, apply_patch, create_sandbox, fetch_patch, load_dataset_from_disk
+from src.utils import TaskContext, apply_patch, create_patch_file, create_sandbox, load_dataset_from_disk
 from tests.utils import BenchmarkServiceTestClient, build_task_environment
 
 logger = get_logger(__name__)
@@ -233,13 +233,13 @@ class TestDaytona:
 
             await apply_patch(sandbox, "/tmp/original_patch.diff")
 
-            extracted_patch = await fetch_patch(sandbox)
-            assert extracted_patch, "Expected patch to be extracted"
+            await create_patch_file(sandbox)
 
-            await sandbox.fs.upload_file(
-                extracted_patch.encode("utf-8"),
-                "/tmp/extracted_patch.diff",
+            result = await sandbox.process.exec(
+                command="test -f /tmp/patch.diff",
+                cwd="/",
             )
+            assert result.exit_code == 0, f"Expected patch file to exist: {result.result}"
 
             first_state = await sandbox.process.exec(
                 command="git diff HEAD | sha256sum",
