@@ -468,6 +468,9 @@ class TestDaytona:
 
         monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
 
+        if not Path("tests/files/patch.diff").exists():
+            pytest.fail("Patch file `tests/files/patch.diff` does not exist")
+
         task_id: str = "astropy__astropy-12907"
         task_context = TaskContext(task_id)
 
