@@ -87,6 +87,7 @@ class TestFastApiServer:
             "docker_image": registry_image_format.format(instance_id=valid_task_id),
             "problem_statement": problem_statement,
             "request_setup": True,
+            "cwd": "/testbed",
         }
 
         assert response.json() == expected_response
@@ -103,6 +104,7 @@ class TestFastApiServer:
             "docker_image": registry_image_format.format(instance_id="django__django-12050"),
             "problem_statement": problem_statement_django,
             "request_setup": True,
+            "cwd": "/testbed",
         }
 
         assert response.status_code == 200, f"Expected 200 OK {response.json()}"

@@ -354,9 +354,14 @@ class TestDaytona:
 
         # Retrieve task
         response = await test_client.request_retrieve_task(task_id=task_id)
+        dataset_map = load_dataset_from_disk()
+
+        problem_statement: str = dataset_map[task_id].get("problem_statement", "")
         assert response == {
             "docker_image": f"ghcr.io/epoch-research/swe-bench.eval.x86_64.{task_id}:latest",
+            "problem_statement": problem_statement,
             "request_setup": True,
+            "cwd": "/testbed",
         }, "Expected task to be retrieved"
 
         # Create sandbox from the provided docker image
