@@ -116,7 +116,8 @@ async def retrieve_task(
     {
         "docker_image": "ghcr.io/e.../{instance_id}:latest",
         "problem_statement": "...",
-        "request_setup": true
+        "request_setup": true,
+        "cwd": "/testbed"
     }
 
     Returns:
@@ -135,6 +136,7 @@ async def retrieve_task(
         docker_image=docker_image,
         problem_statement=problem_statement,
         request_setup=request_setup,
+        cwd="/testbed",
     )
 
 
