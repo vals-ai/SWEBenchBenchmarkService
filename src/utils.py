@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, AsyncGenerator
 
 from datasets import load_from_disk  # type: ignore
-from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, ExecuteResponse, Image, Resources
+from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, ExecuteResponse, Resources
 from swebench.harness.test_spec.test_spec import TestSpec, make_test_spec
 
 from src.logger import get_logger
@@ -196,7 +196,7 @@ async def create_sandbox(daytona: AsyncDaytona, sandbox_name: str, image: str) -
     sandbox = await daytona.create(
         CreateSandboxFromImageParams(
             name=sandbox_name,
-            image=Image.base(image),
+            image=image,
             network_block_all=False,
             resources=Resources(
                 cpu=4,
