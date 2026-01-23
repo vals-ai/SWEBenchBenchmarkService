@@ -9,19 +9,17 @@ RUN apk add --no-cache \
     bash
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+
 ENV PATH="/root/.local/bin:$PATH"
 
 WORKDIR /app
 
-ENV UV_SYSTEM_PYTHON=1
-
-COPY pyproject.toml uv.lock ./
+COPY ./src ./src
+COPY setup.sh pyproject.toml uv.lock README.md main.py ./
 
 RUN uv sync --frozen
 
-COPY . .
-
-RUN rm -rf .venv __pycache__ .pytest_cache && uv run python -m src.setup
+RUN PYTHONPATH=/app /app/.venv/bin/python src/setup/__main__.py
 
 EXPOSE 8000
 

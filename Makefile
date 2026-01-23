@@ -1,26 +1,26 @@
-.PHONY: start-fastapi install task-setup quick-start test-unit test-integration deploy-ecs force-deploy-ecs
+.PHONY: setup benchmark-service test-unit test-integration deploy-ecs force-deploy-ecs
 
 PYTHON_VERSION := 3.12
+IMAGE_NAME := swebench.benchmark.service
+IMAGE_TAG := latest
 
 help:
 	@echo "Available commands:"
-	@echo "  install - Install the dependencies"
-	@echo "  start-fastapi - Start the FastAPI server"
+	@echo "  setup - Initialize the .venv and download dataset"
+	@echo "  benchmark-service - Build and run the benchmark service"
+	@echo "  test-unit - Run unit tests"
+	@echo "  test-integration - Run integration tests"
+	@echo "  deploy-ecs - Deploy the benchmark service to AWS ECS"
+	@echo "  force-deploy-ecs - Force deploy the benchmark service to AWS ECS"
 
-install:
+setup:
 	uv venv --python $(PYTHON_VERSION)
 	uv sync --directory . --group dev
-	@echo "🎉 Done! Run 'source .venv/bin/activate' to activate the environment locally."
-
-task-setup:
 	uv run python -m src.setup
 
-start-fastapi:
-	uv run fastapi dev main.py
-
-quick-start:
-	docker build -t swe-bench:latest -f Dockerfile .
-	docker run -d --privileged swe-bench:latest
+benchmark-service:
+	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) -f Dockerfile .
+	docker run -d --name $(IMAGE_NAME) --privileged $(IMAGE_NAME):$(IMAGE_TAG)
 
 test-unit:
 	uv run pytest tests/unit -vv
