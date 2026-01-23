@@ -9,7 +9,7 @@ from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, Ex
 from swebench.harness.test_spec.test_spec import TestSpec, make_test_spec
 
 from src.logger import get_logger
-from src.types import TaskFilter
+from src.models import TaskFilter
 
 logger = get_logger(__name__)
 
@@ -199,8 +199,8 @@ async def create_sandbox(daytona: AsyncDaytona, sandbox_name: str, image: str) -
             image=image,
             network_block_all=False,
             resources=Resources(
-                cpu=4,
-                memory=8,
+                cpu=2,
+                memory=4,
                 disk=10,
             ),
         ),

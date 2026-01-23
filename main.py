@@ -4,7 +4,7 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 
 from src.evaluation import grade_test_output
 from src.logger import get_logger
-from src.types import (
+from src.models import (
     EvaluateInstanceRequest,
     EvaluateResponseRequest,
     EvaluationResult,
