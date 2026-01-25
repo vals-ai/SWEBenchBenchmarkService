@@ -28,6 +28,10 @@ Integration tests
 
 `make test-integration`
 
+Experimental tests (flaky)
+
+uv run pytest tests/integration/test_daytona.py -m experimental
+
 ### Required Environment variables
 
 Related documentation can be found [here](https://www.daytona.io/docs/configuration#env-file)
