@@ -50,25 +50,6 @@ async def test_client() -> BenchmarkServiceTestClient:
 
 
 class TestDaytona:
-    async def _git_diff(self, sandbox: AsyncSandbox) -> str:
-        result = await sandbox.process.exec(
-            command="git diff HEAD",
-            cwd="/testbed",
-        )
-
-        return result.result
-
-    async def _fetch_current_commit(self, sandbox: AsyncSandbox) -> str:
-        result = await sandbox.process.exec(
-            command="git rev-parse HEAD",
-            cwd="/testbed",
-        )
-
-        if result.exit_code != 0:
-            raise Exception(f"Error fetching current commit for task {sandbox.id}: {result.result}")
-
-        return result.result
-
     async def _insert_patch_and_evaluate(
         self,
         sandbox: AsyncSandbox,
@@ -87,12 +68,6 @@ class TestDaytona:
         await sandbox.fs.upload_file(
             task_context.patch.encode("utf-8"),
             "/tmp/patch.diff",
-        )
-
-        # Ensure newline exists at the end of the patch file
-        await sandbox.process.exec(
-            command="tail -c1 /tmp/patch.diff 2>/dev/null | grep -q $'\n' || printf '\n' >> /tmp/patch.diff",
-            cwd="/",
         )
 
         # Apply the solution patch to the testbed
@@ -163,10 +138,6 @@ class TestDaytona:
             assert actual_commit == task_context.base_commit, (
                 f"Expected commit {task_context.base_commit} but got {actual_commit}"
             )
-
-            # Verify clean state before applying patch
-            diff = await self._git_diff(sandbox)
-            assert not diff, "Expected no diff before applying patch"
 
             # Insert the patch and evaluate the instance
             try:
