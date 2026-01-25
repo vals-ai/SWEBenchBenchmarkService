@@ -30,7 +30,7 @@ Integration tests
 
 Experimental tests (flaky)
 
-uv run pytest tests/integration/test_daytona.py -m experimental
+`uv run pytest tests/integration/test_daytona.py -m experimental`
 
 ### Required Environment variables
 
