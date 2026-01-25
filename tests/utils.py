@@ -2,10 +2,9 @@ import asyncio
 import logging
 import os
 from asyncio import Task
-from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any
 
-from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, Resources
+from daytona import AsyncSandbox, ExecuteResponse
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
@@ -23,6 +22,7 @@ class BenchmarkServiceTestClient:
 
     _client: TestClient
     _BASE_URL: str = "http://localhost:8000"
+    _TIMEOUT: int | None = None
 
     def __init__(self, app: FastAPI) -> None:
         self._client = TestClient(app)
@@ -31,7 +31,7 @@ class BenchmarkServiceTestClient:
         """
         Requests health check from benchmark service
         """
-        async with AsyncClient(base_url=self._BASE_URL) as client:
+        async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
             response = await client.get("/health")
 
         logger.info(f"Health check response: {response.text}")
@@ -48,7 +48,7 @@ class BenchmarkServiceTestClient:
 
         params = {"task_ids": task_ids}
 
-        async with AsyncClient(base_url=self._BASE_URL) as client:
+        async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
             response = await client.get("/verify-task-ids", params=params)
 
         logger.info(f"Verify task ids response: {response.text}")
@@ -67,7 +67,7 @@ class BenchmarkServiceTestClient:
 
         params = {"task_id": task_id, "skip_validation": str(skip_validation)}
 
-        async with AsyncClient(base_url=self._BASE_URL) as client:
+        async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
             response = await client.get("/retrieve-task/", params=params)
 
         logger.info(f"Retrieve task response: {response.text}")
@@ -92,7 +92,7 @@ class BenchmarkServiceTestClient:
         json_data = {"task_id": task_id, "instance_id": instance_id}
         headers = {"X-Api-Key": api_key, "X-Api-Url": api_url, "X-Target": target}
 
-        async with AsyncClient(base_url=self._BASE_URL) as client:
+        async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
             response = await client.post("/setup-task", json=json_data, headers=headers)
 
         logger.info(f"Setup task response: {response.text}")
@@ -114,7 +114,7 @@ class BenchmarkServiceTestClient:
         json_data = {"task_id": task_id, "instance_id": instance_id}
         headers = {"X-Api-Key": api_key, "X-Api-Url": api_url, "X-Target": target}
 
-        async with AsyncClient(base_url=self._BASE_URL) as client:
+        async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
             response = await client.post("/evaluate-instance/", json=json_data, headers=headers)
 
         logger.info(f"Evaluate instance response: {response.text}")
@@ -134,7 +134,7 @@ class BenchmarkServiceTestClient:
         json_data = {"evaluation_results": evaluation_results}
         headers = {"Content-Type": "application/json"}
 
-        async with AsyncClient(base_url=self._BASE_URL) as client:
+        async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
             response = await client.post("/final-score", json=json_data, headers=headers)
 
         logger.info(f"Final score response: {response.text}")
@@ -143,36 +143,6 @@ class BenchmarkServiceTestClient:
             raise Exception(f"Final score failed with status code {response.status_code}, response: {response.text}")
 
         return response.json()
-
-
-@asynccontextmanager
-async def build_task_environment(
-    daytona: AsyncDaytona,
-    task_id: str,
-    docker_image: str,
-) -> AsyncIterator[AsyncSandbox]:
-    """
-    Builds the task environment using the dockerfile path
-    """
-
-    sandbox = await daytona.create(
-        CreateSandboxFromImageParams(
-            env_vars={"TEST_DIR": "/tests"},
-            image=docker_image,
-            name=task_id,
-            network_block_all=False,
-            resources=Resources(cpu=4, memory=8, disk=10),
-        ),
-        timeout=360,
-    )
-
-    await sandbox.process.create_session(sandbox.id)
-
-    try:
-        yield sandbox
-    finally:
-        await daytona.delete(sandbox)
-        pass
 
 
 async def get_session_logger(sandbox: AsyncSandbox, session_id: str, cmd_id: str, logger: logging.Logger) -> Task[None]:
@@ -196,3 +166,24 @@ async def get_session_logger(sandbox: AsyncSandbox, session_id: str, cmd_id: str
     )
 
     return log_task
+
+
+async def apply_patch(sandbox: AsyncSandbox, patch_path: str) -> str:
+    GIT_APPLY_CMDS = [
+        "git apply --verbose",
+        "git apply --verbose --reject",
+        "patch --batch --fuzz=5 -p1 -i",
+    ]
+
+    for git_apply_cmd in GIT_APPLY_CMDS:
+        result: ExecuteResponse = await sandbox.process.exec(
+            command=f"{git_apply_cmd} {patch_path}",
+            cwd="/testbed",
+        )
+
+        if result.exit_code == 0:
+            return result.result
+        else:
+            logger.warning(f"Failed to apply patch command `{git_apply_cmd}`:{result.result}")
+
+    raise ValueError(f"Failed to apply patch `{patch_path}`")

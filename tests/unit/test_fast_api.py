@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 
 from main import app
-from src.types import EvaluationResult
+from src.models import EvaluationResult
 from src.utils import load_dataset_from_disk
 
 client = TestClient(app, raise_server_exceptions=False)
