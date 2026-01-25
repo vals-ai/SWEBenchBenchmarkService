@@ -7,7 +7,7 @@ requires-python = "==3.12.*"
 
 dependencies = [
     "datasets>=4.4.2",
-    "daytona>=0.128.1",
+    "daytona>=0.134.0",
     "fastapi[standard]>=0.127.1",
     "httpx>=0.28.1",
     "swebench==4.1.0",
@@ -45,8 +45,9 @@ reportImplicitRelativeImport = true
 [tool.pytest.ini_options]
 pythonpath = ["."]
 asyncio_mode = "auto"
+addopts = '-m "not experimental"'
 markers = [
-  "daytona: requires Daytona sandbox"
+  "experimental: tests we want to ignore from a git action, either take too long or are inconsistent",
 ]
 
 [tool.uv]

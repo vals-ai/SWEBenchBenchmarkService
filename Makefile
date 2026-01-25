@@ -6,21 +6,27 @@ IMAGE_TAG := latest
 
 help:
 	@echo "Available commands:"
-	@echo "  setup - Initialize the .venv and download dataset"
+	@echo "  install - Initialize the .venv and download dependencies"
+	@echo "  setup - Download dataset"
 	@echo "  benchmark-service - Build and run the benchmark service"
 	@echo "  test-unit - Run unit tests"
 	@echo "  test-integration - Run integration tests"
 	@echo "  deploy-ecs - Deploy the benchmark service to AWS ECS"
 	@echo "  force-deploy-ecs - Force deploy the benchmark service to AWS ECS"
 
-setup:
+install:
 	uv venv --python $(PYTHON_VERSION)
 	uv sync --directory . --group dev
+	
+setup:
 	uv run python -m src.setup
 
 benchmark-service:
 	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) -f Dockerfile .
-	docker run -d --name $(IMAGE_NAME) --privileged $(IMAGE_NAME):$(IMAGE_TAG)
+	docker run -d --name $(IMAGE_NAME) -p 8000:8000 --privileged $(IMAGE_NAME):$(IMAGE_TAG)
+
+start-fastapi:
+	uv run fastapi run main.py --host 0.0.0.0 --port 8000
 
 test-unit:
 	uv run pytest tests/unit -vv
