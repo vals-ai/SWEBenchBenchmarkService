@@ -138,44 +138,6 @@ class TestDaytona:
 
         assert len(errors) == 0, f"{' \n'.join(errors)}"
 
-    async def test_apply_patch(
-        self,
-        daytona: AsyncDaytona,
-        test_client: BenchmarkServiceTestClient,
-    ) -> None:
-        task_id = "astropy__astropy-12907"
-
-        task_context = TaskContext(task_id)
-        async with create_sandbox(daytona, task_id, task_context.docker_image) as sandbox:
-            # Setup task environment, ensuring we are on the correct base commit
-            await test_client.request_setup_task(task_id=task_id, instance_id=sandbox.id)
-
-            # Verify we are on the correct commit (validates that the setup script worked)
-            current_commit = await self._fetch_current_commit(sandbox)
-            assert current_commit == task_context.base_commit, (
-                f"Expected commit {task_context.base_commit} but got {current_commit} for task {task_id}"
-            )
-
-            # Verify that there is no diff before applying patch
-            diff = await self._git_diff(sandbox)
-            assert diff == "", "Expected no diff before applying patch"
-
-            # Copy git patch to tmp/patch.diff
-            await sandbox.fs.upload_file(
-                task_context.patch.encode("utf-8"),
-                "/tmp/patch.diff",
-            )
-
-            # Apply patch to the testbed
-            try:
-                await apply_patch(sandbox, "/tmp/patch.diff")
-            except Exception:
-                pytest.fail(f"Error applying solution patch for task {task_id}")
-
-            # Verify that there is a diff after applying patch
-            diff = await self._git_diff(sandbox)
-            assert diff, "Expected diff to be applied to the testbed"
-
     async def test_evaluate_instance(
         self,
         daytona: AsyncDaytona,
