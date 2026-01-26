@@ -1579,7 +1579,7 @@ wheels = [
 [[package]]
 name = "swebenchbenchmarkservice"
 version = "0.1.0"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
     { name = "datasets" },
     { name = "daytona" },
