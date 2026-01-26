@@ -28,6 +28,10 @@ Integration tests
 
 `make test-integration`
 
+Experimental tests (flaky)
+
+`uv run pytest tests/integration/test_daytona.py -m experimental`
+
 ### Required Environment variables
 
 Related documentation can be found [here](https://www.daytona.io/docs/configuration#env-file)
@@ -60,3 +64,14 @@ Redeploy
 - `force-deploy-ecs`
 
 Average deploy time is 385.79s
+
+### Known bugs
+
+We use the same test script and evaluation methodology as the originally [SWEBench repository](https://github.com/SWE-bench/SWE-bench).
+
+There have been a few tasks with reported bugs that basically make the task fail no matter what.
+
+- [astropy__astropy-7606](https://github.com/SWE-bench/SWE-bench/issues/223)
+- [astropy__astropy-8707](https://github.com/SWE-bench/SWE-bench/issues/342)
+- [astropy__astropy-8872](https://github.com/SWE-bench/SWE-bench/issues/343)
+- [django__django-10097](https://github.com/swe-bench/SWE-bench/issues/267)

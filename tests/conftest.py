@@ -9,7 +9,7 @@ def task_directory(tmp_path: Path) -> Path:
     return tmp_path / "swe-bench-verified"
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="function", autouse=True)
 def setup_dataset(tmp_path_factory: TempPathFactory, monkeypatch: MonkeyPatch) -> Path:
     tmp_path = tmp_path_factory.mktemp("data")
     task_directory = tmp_path / "swe-bench-verified"

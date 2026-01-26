@@ -2,14 +2,15 @@ import asyncio
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, cast
 
 from datasets import load_from_disk  # type: ignore
 from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, ExecuteResponse, Resources
+from swebench.harness.constants import MAP_REPO_VERSION_TO_SPECS
 from swebench.harness.test_spec.test_spec import TestSpec, make_test_spec
 
 from src.logger import get_logger
-from src.types import TaskFilter
+from src.models import TaskFilter
 
 logger = get_logger(__name__)
 
@@ -170,6 +171,15 @@ class TaskContext:
 
         return patch
 
+    @property
+    def pre_install_script(self) -> list[str]:
+        specs: dict[str, Any] = cast(
+            dict[str, Any],
+            MAP_REPO_VERSION_TO_SPECS.get(self._row.get("repo"), {}).get(self._row.get("version"), {}),  # type: ignore
+        )
+
+        return specs.get("pre_install", [])
+
     @staticmethod
     async def validate_docker_image(image_name: str) -> bool:
         try:
@@ -193,6 +203,7 @@ class TaskContext:
 
 @asynccontextmanager
 async def create_sandbox(daytona: AsyncDaytona, sandbox_name: str, image: str) -> AsyncGenerator[AsyncSandbox, Any]:
+    # TODO: Take in resources as a parameter
     sandbox = await daytona.create(
         CreateSandboxFromImageParams(
             name=sandbox_name,
@@ -221,95 +232,52 @@ def fetch_test_spec(task_id: str) -> TestSpec:
     return make_test_spec(dataset_map[task_id])  # type: ignore
 
 
-async def create_patch_file(sandbox: AsyncSandbox) -> None:
-    # Create directory /tmp if it doesn't exist
-    await sandbox.fs.create_folder("/tmp", "755")
-
-    # Create the patch file inside of /tmp
-    result: ExecuteResponse = await sandbox.process.exec(
-        command="git add -A && git diff --cached > /tmp/patch.diff",
-        cwd="/testbed",
-    )
-
-    # If the command failed, raise an error
-    if result.exit_code != 0:
-        raise ValueError(f"Error fetching patch: {result.result}")
-
-    # Ensure that a newline exists at the end of the patch file
-    await sandbox.process.exec(
-        command="tail -c1 /tmp/patch.diff 2>/dev/null | grep -q $'\n' || printf '\n' >> /tmp/patch.diff",
-        cwd="/",
-    )
-
-
-async def apply_patch(sandbox: AsyncSandbox, patch_path: str) -> str:
-    GIT_APPLY_CMDS = [
-        "git apply --verbose",
-        "git apply --verbose --reject",
-        "patch --batch --fuzz=5 -p1 -i",
-    ]
-
-    for git_apply_cmd in GIT_APPLY_CMDS:
-        result: ExecuteResponse = await sandbox.process.exec(
-            command=f"{git_apply_cmd} {patch_path}",
-            cwd="/testbed",
-        )
-
-        if result.exit_code == 0:
-            return result.result
-        else:
-            logger.warning(f"Failed to apply patch command `{git_apply_cmd}`:{result.result}")
-
-    raise ValueError(f"Failed to apply patch `{patch_path}`")
-
-
-def create_evaluation_script(task_id: str, instance_id: str) -> str:
+def create_evaluation_script(task_id: str) -> str:
     test_spec: TestSpec = fetch_test_spec(task_id)
 
     evaluation_script: str = test_spec.eval_script
 
-    if "django" in instance_id:
+    if "django" in task_id:
         evaluation_script = evaluation_script.replace("locale-gen", "locale-gen en_US.UTF-8")
 
     return evaluation_script
 
 
-def create_run_command(instance_id: str) -> str:
+def create_run_command(task_id: str) -> str:
     run_command = "cd /testbed"
-    if "pylint" in instance_id:
+    if "pylint" in task_id:
         run_command += " && PYTHONPATH="
 
     run_command += " && python3 -c 'import sys; sys.setrecursionlimit(10000)'"
-    run_command += " && /bin/bash /root/eval.sh"
+    run_command += " && /bin/bash /root/eval.sh 2>&1"
 
     return run_command
 
 
-async def run_tests(sandbox: AsyncSandbox, task_id: str, instance_id: str) -> str:
-    # Create the patch file inside of /tmp
-    await create_patch_file(sandbox)
-
-    # Reset the current state of the repository to the base commit
+async def run_tests(sandbox: AsyncSandbox, task_id: str) -> str:
+    # Ensure newline exists at the end of the patch file
     await sandbox.process.exec(
-        command="git reset --hard HEAD && git clean -fd",
-        cwd="/testbed",
+        command="tail -c1 /tmp/patch.diff 2>/dev/null | grep -q $'\n' || printf '\n' >> /tmp/patch.diff",
+        cwd="/",
     )
 
-    # Apply the patch to the repository
-    await apply_patch(sandbox, "/tmp/patch.diff")
-
-    evaluation_script: str = create_evaluation_script(task_id, instance_id)
+    evaluation_script: str = create_evaluation_script(task_id)
 
     await sandbox.fs.upload_file(
         evaluation_script.encode("utf-8"),
         "/root/eval.sh",
     )
 
-    run_command: str = create_run_command(instance_id)
+    run_command: str = create_run_command(task_id)
 
+    # TODO: Swap to session command
     result: ExecuteResponse = await sandbox.process.exec(
         command=run_command,
+        timeout=0,  # Run indefinitely
     )
+
+    if result.exit_code != 0:
+        raise ValueError(f"Error running tests for task {task_id}: {result.result}")
 
     return result.result
 

@@ -25,7 +25,7 @@ from swebench.harness.grading import (
 )
 from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
 
-from src.types import EvaluationResult
+from src.models import EvaluationResult
 
 
 def grade_test_output(test_output: str, task_id: str, instance_id: str) -> "EvaluationResult":

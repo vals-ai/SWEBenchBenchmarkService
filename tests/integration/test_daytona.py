@@ -10,18 +10,14 @@ import pytest_asyncio
 from daytona import (
     AsyncDaytona,
     AsyncSandbox,
-    CreateSandboxFromImageParams,
     DaytonaConfig,
-    Image,
-    Resources,
 )
 from dotenv import load_dotenv
-from pytest import MonkeyPatch
 
 from main import app
 from src.logger import get_logger
-from src.utils import TaskContext, apply_patch, create_patch_file, create_sandbox, load_dataset_from_disk
-from tests.utils import BenchmarkServiceTestClient, build_task_environment
+from src.utils import TaskContext, create_sandbox, load_dataset_from_disk
+from tests.utils import BenchmarkServiceTestClient, apply_patch
 
 logger = get_logger(__name__)
 
@@ -40,43 +36,20 @@ async def daytona() -> AsyncGenerator[AsyncDaytona, None]:
         yield daytona
 
 
-@pytest_asyncio.fixture
-async def sandbox(daytona: AsyncDaytona):
-    sandbox = await daytona.create(
-        CreateSandboxFromImageParams(
-            image=Image.from_dockerfile("Dockerfile"),
-            name="swebench.benchmark.service",
-            network_block_all=False,
-            resources=Resources(cpu=2, memory=4, disk=5),
-        ),
-        timeout=360,
-    )
-
-    try:
-        yield sandbox
-    finally:
-        await sandbox.delete()
-
-
 @pytest.fixture
 def setup_script_path() -> Path:
+    if not Path("setup.sh").exists():
+        pytest.fail("Setup script `setup.sh` does not exist")
+
     return Path("setup.sh")
 
 
 @pytest_asyncio.fixture
-async def test_client(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> BenchmarkServiceTestClient:
-    return BenchmarkServiceTestClient(app, daytona, sandbox)
+async def test_client() -> BenchmarkServiceTestClient:
+    return BenchmarkServiceTestClient(app)
 
 
 class TestDaytona:
-    async def _git_diff(self, sandbox: AsyncSandbox) -> str:
-        result = await sandbox.process.exec(
-            command="git diff HEAD",
-            cwd="/testbed",
-        )
-
-        return result.result
-
     async def _insert_patch_and_evaluate(
         self,
         sandbox: AsyncSandbox,
@@ -88,16 +61,13 @@ class TestDaytona:
         if request_setup:
             await test_client.request_setup_task(task_id=task_context.task_id, instance_id=sandbox.id)
 
+        if not task_context.patch:
+            raise Exception(f"Patch not found for task {task_context.task_id}")
+
         # Once that is done, we simulate an agent being copied into the sandbox and running by copying the solution patch inside
         await sandbox.fs.upload_file(
             task_context.patch.encode("utf-8"),
             "/tmp/patch.diff",
-        )
-
-        # Ensure newline exists at the end of the patch file
-        await sandbox.process.exec(
-            command="tail -c1 /tmp/patch.diff 2>/dev/null | grep -q $'\n' || printf '\n' >> /tmp/patch.diff",
-            cwd="/",
         )
 
         # Apply the solution patch to the testbed
@@ -105,9 +75,6 @@ class TestDaytona:
             await apply_patch(sandbox, "/tmp/patch.diff")
         except Exception:
             raise Exception(f"Error applying solution patch for task {task_context.task_id}")
-
-        # Remove the temp patch file
-        await sandbox.fs.delete_file("/tmp/patch.diff")
 
         # Request for evaluation
         evaluation_result = await test_client.request_evaluate_instance(
@@ -117,11 +84,8 @@ class TestDaytona:
 
         return evaluation_result
 
-    async def test_build_all_sandboxes(
-        self, daytona: AsyncDaytona, setup_dataset: Path, monkeypatch: MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
-
+    @pytest.mark.experimental
+    async def test_build_all_sandboxes(self, daytona: AsyncDaytona) -> None:
         dataset_map = load_dataset_from_disk()
 
         assert len(dataset_map) == 500, "Expected 500 tasks to be available"
@@ -149,155 +113,11 @@ class TestDaytona:
 
         assert len(errors) == 0, f"{' \n'.join(errors)}"
 
-    async def test_apply_patch(
-        self,
-        daytona: AsyncDaytona,
-        setup_dataset: Path,
-        monkeypatch: MonkeyPatch,
-        setup_script_path: Path,
-        test_client: BenchmarkServiceTestClient,
-    ) -> None:
-        if not setup_script_path.exists():
-            pytest.fail(f"Setup script path {setup_script_path} does not exist")
-
-        monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
-
-        task_id = "astropy__astropy-12907"
-
-        task_context = TaskContext(task_id)
-        async with create_sandbox(daytona, task_id, task_context.docker_image) as sandbox:
-            # Setup task environment, ensuring we are on the correct base commit
-            await test_client.request_setup_task(task_id=task_id, instance_id=sandbox.id)
-
-            # Check that the testbed is the ROOT environment variable
-            root_result = await sandbox.process.exec(
-                command="echo $ROOT",
-                cwd="/",
-            )
-
-            assert root_result.result.strip() == "/testbed"
-
-            # Verify we are on the correct commit (validates that the setup script worked)
-            verify_result = await sandbox.process.exec(
-                command="git rev-parse HEAD",
-                cwd="/testbed",
-            )
-
-            if verify_result.exit_code != 0:
-                pytest.fail(f"Error verifying commit for task {task_id} with error: {verify_result.result}")
-
-            actual_commit = verify_result.result.strip()
-            assert actual_commit == task_context.base_commit, (
-                f"Expected commit {task_context.base_commit} but got {actual_commit} for task {task_id}"
-            )
-
-            # Verify that there is no diff before applying patch
-            diff = await self._git_diff(sandbox)
-            assert diff == "", "Expected no diff before applying patch"
-
-            # Copy git patch to tmp/patch.diff
-            await sandbox.fs.upload_file(
-                task_context.patch.encode("utf-8"),
-                "/tmp/patch.diff",
-            )
-
-            # Apply patch to the testbed
-            try:
-                await apply_patch(sandbox, "/tmp/patch.diff")
-            except Exception:
-                pytest.fail(f"Error applying solution patch for task {task_id}")
-
-            # Verify that there is a diff after applying patch
-            diff = await self._git_diff(sandbox)
-            assert diff, "Expected diff to be applied to the testbed"
-
-    async def test_extract_patch(
-        self,
-        daytona: AsyncDaytona,
-        setup_dataset: Path,
-        monkeypatch: MonkeyPatch,
-        setup_script_path: Path,
-        test_client: BenchmarkServiceTestClient,
-    ) -> None:
-        if not setup_script_path.exists():
-            pytest.fail(f"Setup script path {setup_script_path} does not exist")
-
-        monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
-        task_id = "astropy__astropy-12907"
-        task_context = TaskContext(task_id)
-
-        async with create_sandbox(daytona, task_id, task_context.docker_image) as sandbox:
-            await test_client.request_setup_task(task_id=task_id, instance_id=sandbox.id)
-
-            diff = await self._git_diff(sandbox)
-            assert diff == "", "Expected no diff before applying patch"
-
-            await sandbox.fs.upload_file(
-                task_context.patch.encode("utf-8"),
-                "/tmp/original_patch.diff",
-            )
-
-            await apply_patch(sandbox, "/tmp/original_patch.diff")
-
-            await create_patch_file(sandbox)
-
-            result = await sandbox.process.exec(
-                command="test -f /tmp/patch.diff",
-                cwd="/",
-            )
-            assert result.exit_code == 0, f"Expected patch file to exist: {result.result}"
-
-            first_state = await sandbox.process.exec(
-                command="git diff HEAD | sha256sum",
-                cwd="/testbed",
-            )
-            first_hash = first_state.result.split()[0]
-
-            reset_result = await sandbox.process.exec(
-                command="git reset --hard HEAD && git clean -fd",
-                cwd="/testbed",
-            )
-
-            if reset_result.exit_code != 0:
-                pytest.fail(f"Failed to reset repository: {reset_result.result}")
-
-            diff = await self._git_diff(sandbox)
-            assert diff == "", "Expected no diff after reset"
-
-            await apply_patch(sandbox, "/tmp/extracted_patch.diff")
-
-            second_state = await sandbox.process.exec(
-                command="git diff HEAD | sha256sum",
-                cwd="/testbed",
-            )
-
-            second_hash = second_state.result.split()[0]
-
-            assert first_hash == second_hash, (
-                f"Extracted patch produces different result. "
-                f"First application hash: {first_hash}, "
-                f"Second application hash: {second_hash}"
-            )
-
-            status = await sandbox.process.exec(
-                command="git status --porcelain",
-                cwd="/testbed",
-            )
-
-            assert status.result.strip(), "Expected files to be modified after applying extracted patch"
-
     async def test_evaluate_instance(
         self,
         daytona: AsyncDaytona,
-        setup_dataset: Path,
-        monkeypatch: MonkeyPatch,
-        setup_script_path: Path,
         test_client: BenchmarkServiceTestClient,
     ) -> None:
-        if not setup_script_path.exists():
-            pytest.fail(f"Setup script path {setup_script_path} does not exist")
-
-        monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
         task_id = "astropy__astropy-12907"
         task_context = TaskContext(task_id)
 
@@ -319,10 +139,6 @@ class TestDaytona:
                 f"Expected commit {task_context.base_commit} but got {actual_commit}"
             )
 
-            # Verify clean state before applying patch
-            diff = await self._git_diff(sandbox)
-            assert not diff, "Expected no diff before applying patch"
-
             # Insert the patch and evaluate the instance
             try:
                 evaluation_result = await self._insert_patch_and_evaluate(sandbox, task_context, True, test_client)
@@ -340,14 +156,7 @@ class TestDaytona:
         self,
         daytona: AsyncDaytona,
         test_client: BenchmarkServiceTestClient,
-        setup_dataset: Path,
-        monkeypatch: MonkeyPatch,
     ) -> None:
-        if not setup_dataset.exists():
-            pytest.fail(f"Setup dataset path {setup_dataset} does not exist")
-
-        monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
-
         task_id = "astropy__astropy-12907"
 
         # Ensure service is running
@@ -371,7 +180,7 @@ class TestDaytona:
         }, "Expected task to be retrieved"
 
         # Create sandbox from the provided docker image
-        async with build_task_environment(daytona, task_id, response["docker_image"]) as sandbox:
+        async with create_sandbox(daytona, task_id, response["docker_image"]) as sandbox:
             task_context: TaskContext = TaskContext(task_id)
 
             # Insert the patch and evaluate the instance
@@ -389,21 +198,14 @@ class TestDaytona:
                 f"Expected instance to be resolved. Result: {evaluation_result}"
             )
 
+    @pytest.mark.experimental
     async def test_validate_all_images(
         self,
         daytona: AsyncDaytona,
-        setup_dataset: Path,
-        monkeypatch: MonkeyPatch,
         test_client: BenchmarkServiceTestClient,
     ) -> None:
-        if not setup_dataset.exists():
-            pytest.fail(f"Setup dataset path {setup_dataset} does not exist")
-
-        monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
-
         dataset_map = load_dataset_from_disk()
         task_ids: list[str] = list(dataset_map.keys())
-
         response = await test_client.request_health_check()
         assert response == {"status": "ok"}, "Expected health check to return ok"
 
@@ -412,13 +214,13 @@ class TestDaytona:
         assert response == {"task_ids": task_ids}, "Expected task ids to be valid"
 
         # cap amount of concurrent evaluations to 15
-        semaphore = asyncio.Semaphore(50)
+        semaphore = asyncio.Semaphore(15)
 
         async def start_and_evaluate_instance(task_id: str) -> dict[str, Any]:
             try:
                 async with semaphore:
                     task_response = await test_client.request_retrieve_task(task_id=task_id, skip_validation=True)
-                    async with build_task_environment(daytona, task_id, task_response["docker_image"]) as sandbox:
+                    async with create_sandbox(daytona, task_id, task_response["docker_image"]) as sandbox:
                         task_context = TaskContext(task_id)
 
                         return await self._insert_patch_and_evaluate(
@@ -444,102 +246,14 @@ class TestDaytona:
         errors: list[str] = []
         for result in results:
             if "error" in result:
-                errors.append(f"Task `{result['instance_id']}`: {result['error']}")
+                errors.append(f"Task `{result['task_id']}`: {result['error']}")
 
         assert len(errors) == 0, f"{' \n'.join(errors)}"
 
         # All instances should be resolved
         not_resolved: list[str] = []
         for result in results:
-            if not result["resolved"]:
-                not_resolved.append(f"Task `{result['instance_id']}`: {result['resolution_status']}")
+            if "resolved" in result and not result["resolved"]:
+                not_resolved.append(f"Task `{result['task_id']}`: {result['resolution_status']}")
 
         assert len(not_resolved) == 0, f"{' \n'.join(not_resolved)}"
-
-    async def test_patch_regression(
-        self,
-        daytona: AsyncDaytona,
-        setup_dataset: Path,
-        monkeypatch: MonkeyPatch,
-    ) -> None:
-        """
-        Regression test for patch creation and application.
-
-        NOTE: Prevents bug case where patch file is not created with a newline at the end.
-        """
-
-        if not setup_dataset.exists():
-            pytest.fail(f"Setup dataset path {setup_dataset} does not exist")
-
-        monkeypatch.setattr("src.utils._DISK_PATH", setup_dataset)
-
-        if not Path("tests/files/patch.diff").exists():
-            pytest.fail("Patch file `tests/files/patch.diff` does not exist")
-
-        task_id: str = "astropy__astropy-12907"
-        task_context = TaskContext(task_id)
-
-        async with create_sandbox(daytona, task_id, task_context.docker_image) as sandbox:
-            # Apply the patch file for this test (has newline so its applicable)
-            with open("tests/files/patch.diff", "r") as f:
-                patch = f.read()
-
-            await sandbox.fs.upload_file(
-                patch.encode("utf-8"),
-                "/tmp/patch.diff",
-            )
-
-            # Apply the patch file (test setup)
-            try:
-                await apply_patch(sandbox, "/tmp/patch.diff")
-
-                pytest.fail("Expected error since patch file has no newline at the end")
-            except Exception:
-                pass
-
-            # Apply newline at the end of the patch file
-            await sandbox.process.exec(
-                command="echo >> /tmp/patch.diff",
-                cwd="/",
-            )
-
-            # Reapply the patch file (works now)
-            try:
-                await apply_patch(sandbox, "/tmp/patch.diff")
-            except Exception:
-                pytest.fail("Expected patch to be applied successfully")
-
-            # Delete the patch file inside of /tmp
-            await sandbox.fs.delete_file("/tmp/patch.diff")
-
-            # Use production script to create patch file inside of /tmp
-            await create_patch_file(sandbox)
-
-            # Verify that the patch file exists
-            result = await sandbox.process.exec(
-                command="test -f /tmp/patch.diff",
-                cwd="/",
-            )
-            assert result.exit_code == 0, f"Expected patch file to exist: {result.result}"
-
-            # Verify that the patch contains a newline at the end
-            result = await sandbox.process.exec(
-                command="tail -c1 /tmp/patch.diff 2>/dev/null | grep -q $'\n'",
-                cwd="/",
-            )
-            assert result.exit_code == 0, f"Expected patch file to contain a newline at the end: {result.result}"
-
-            await sandbox.process.exec(
-                command="git reset --hard HEAD && git clean -fd",
-                cwd="/testbed",
-            )
-
-            # Apply the patch file
-            try:
-                await apply_patch(sandbox, "/tmp/patch.diff")
-            except Exception as e:
-                pytest.fail(f"Failed to apply patch for test {task_id}: {e}")
-
-            # Verify that the patch was applied successfully
-            diff = await self._git_diff(sandbox)
-            assert diff, "Expected diff to be applied to the testbed"

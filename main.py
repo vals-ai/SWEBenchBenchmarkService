@@ -1,10 +1,13 @@
+import traceback
+from pathlib import Path
+
 from daytona import AsyncDaytona, DaytonaConfig
 from daytona.common.process import ExecuteResponse
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 
 from src.evaluation import grade_test_output
 from src.logger import get_logger
-from src.types import (
+from src.models import (
     EvaluateInstanceRequest,
     EvaluateResponseRequest,
     EvaluationResult,
@@ -35,7 +38,7 @@ logger = get_logger(__name__)
 @app.exception_handler(Exception)
 async def exception_handler(_request: Request, exc: Exception):
     logger.error(exc, exc_info=True)
-    raise HTTPException(status_code=500, detail=str(exc)) from exc
+    raise HTTPException(status_code=500, detail=f"{str(exc)}: {traceback.format_exc()}") from exc
 
 
 @app.get("/health")
@@ -176,8 +179,13 @@ async def setup_task(
 
     sandbox = await daytona.get(request.instance_id)
 
+    setup_script = Path("setup.sh").read_text()
+
+    if task_context.pre_install_script:
+        setup_script += "\n" + "\n".join(task_context.pre_install_script)
+
     await sandbox.fs.upload_file(
-        "setup.sh",
+        setup_script.encode("utf-8"),
         "/setup.sh",
     )
 
@@ -244,7 +252,7 @@ async def evaluate_instance(
 
     sandbox = await daytona.get(request.instance_id)
 
-    test_output: str = await run_tests(sandbox, validated_task_id, request.instance_id)
+    test_output: str = await run_tests(sandbox, validated_task_id)
 
     final_result: EvaluationResult = grade_test_output(test_output, validated_task_id, request.instance_id)
 
