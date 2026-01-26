@@ -11,7 +11,7 @@ source .venv/bin/activate
 make task-setup
 
 # Start fastapi server for local testing
-make start-fastapi
+make fastapi
 ```
 
 Documentation can be found at `http://127.0.0.1:8000/docs` once you start the fastapi server locally
