@@ -1,4 +1,4 @@
-.PHONY: setup benchmark-service test-unit test-integration deploy-ecs force-deploy-ecs
+.PHONY: install setup benchmark-service fastapi test-unit test-integration deploy-ecs force-deploy-ecs
 
 PYTHON_VERSION := 3.12
 IMAGE_NAME := swebench.benchmark.service
@@ -25,7 +25,7 @@ benchmark-service:
 	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) -f Dockerfile .
 	docker run -d --name $(IMAGE_NAME) -p 8000:8000 --privileged $(IMAGE_NAME):$(IMAGE_TAG)
 
-start-fastapi:
+fastapi:
 	uv run fastapi run main.py --host 0.0.0.0 --port 8000
 
 test-unit:

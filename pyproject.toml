@@ -49,13 +49,3 @@ addopts = '-m "not experimental"'
 markers = [
   "experimental: tests we want to ignore from a git action, either take too long or are inconsistent",
 ]
-
-[tool.uv]
-package = true
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src"]

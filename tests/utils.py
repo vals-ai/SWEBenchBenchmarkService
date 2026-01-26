@@ -34,12 +34,14 @@ class BenchmarkServiceTestClient:
         async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
             response = await client.get("/health")
 
-        logger.info(f"Health check response: {response.text}")
+            logger.info(f"Health check response: {response.text}")
 
-        if response.status_code != 200:
-            raise Exception(f"Health check failed with status code {response.status_code}, response: {response.text}")
+            if response.status_code != 200:
+                raise Exception(
+                    f"Health check failed with status code {response.status_code}, response: {response.text}"
+                )
 
-        return response.json()
+            return response.json()
 
     async def request_verify_task_ids(self, task_ids: list[str]) -> dict[str, list[str]]:
         """
@@ -51,14 +53,14 @@ class BenchmarkServiceTestClient:
         async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
             response = await client.get("/verify-task-ids", params=params)
 
-        logger.info(f"Verify task ids response: {response.text}")
+            logger.info(f"Verify task ids response: {response.text}")
 
-        if response.status_code != 200:
-            raise Exception(
-                f"Verify task ids failed with status code {response.status_code}, response: {response.text}"
-            )
+            if response.status_code != 200:
+                raise Exception(
+                    f"Verify task ids failed with status code {response.status_code}, response: {response.text}"
+                )
 
-        return response.json()
+            return response.json()
 
     async def request_retrieve_task(self, task_id: str, skip_validation: bool = False) -> dict[str, str]:
         """
@@ -95,9 +97,9 @@ class BenchmarkServiceTestClient:
         async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
             response = await client.post("/setup-task", json=json_data, headers=headers)
 
-        logger.info(f"Setup task response: {response.text}")
+            logger.info(f"Setup task response: {response.text}")
 
-        return response.json()
+            return response.json()
 
     async def request_evaluate_instance(self, task_id: str, instance_id: str) -> dict[str, str]:
         """
@@ -117,14 +119,14 @@ class BenchmarkServiceTestClient:
         async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
             response = await client.post("/evaluate-instance/", json=json_data, headers=headers)
 
-        logger.info(f"Evaluate instance response: {response.text}")
+            logger.info(f"Evaluate instance response: {response.text}")
 
-        if response.status_code != 200:
-            raise Exception(
-                f"Evaluate instance failed with status code {response.status_code}, response: {response.text}"
-            )
+            if response.status_code != 200:
+                raise Exception(
+                    f"Evaluate instance failed with status code {response.status_code}, response: {response.text}"
+                )
 
-        return response.json()
+            return response.json()
 
     async def request_final_score(self, evaluation_results: dict[str, EvaluationResult]) -> dict[str, Any]:
         """
@@ -137,12 +139,14 @@ class BenchmarkServiceTestClient:
         async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
             response = await client.post("/final-score", json=json_data, headers=headers)
 
-        logger.info(f"Final score response: {response.text}")
+            logger.info(f"Final score response: {response.text}")
 
-        if response.status_code != 200:
-            raise Exception(f"Final score failed with status code {response.status_code}, response: {response.text}")
+            if response.status_code != 200:
+                raise Exception(
+                    f"Final score failed with status code {response.status_code}, response: {response.text}"
+                )
 
-        return response.json()
+            return response.json()
 
 
 async def get_session_logger(sandbox: AsyncSandbox, session_id: str, cmd_id: str, logger: logging.Logger) -> Task[None]:
