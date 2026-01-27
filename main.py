@@ -167,36 +167,35 @@ async def setup_task(
 
     logger.info(f"Setup task endpoint request received: {request.model_dump_json(indent=4)}")
 
-    daytona = AsyncDaytona(
-        config=DaytonaConfig(
-            api_key=x_api_key,
-            api_url=x_api_url,
-            target=x_target,
+    daytona_config = DaytonaConfig(
+        api_key=x_api_key,
+        api_url=x_api_url,
+        target=x_target,
+    )
+
+    async with AsyncDaytona(config=daytona_config) as daytona:
+        task_context = TaskContext(request.task_id)
+
+        sandbox = await daytona.get(request.instance_id)
+
+        setup_script = Path("setup.sh").read_text()
+
+        if task_context.pre_install_script:
+            setup_script += "\n" + "\n".join(task_context.pre_install_script)
+
+        await sandbox.fs.upload_file(
+            setup_script.encode("utf-8"),
+            "/setup.sh",
         )
-    )
 
-    task_context = TaskContext(request.task_id)
+        result: ExecuteResponse = await sandbox.process.exec(
+            command=f"chmod +x /setup.sh && bash /setup.sh {task_context.base_commit}",
+        )
 
-    sandbox = await daytona.get(request.instance_id)
+        if result.exit_code != 0:
+            raise HTTPException(status_code=500, detail=result.result)
 
-    setup_script = Path("setup.sh").read_text()
-
-    if task_context.pre_install_script:
-        setup_script += "\n" + "\n".join(task_context.pre_install_script)
-
-    await sandbox.fs.upload_file(
-        setup_script.encode("utf-8"),
-        "/setup.sh",
-    )
-
-    result: ExecuteResponse = await sandbox.process.exec(
-        command=f"chmod +x /setup.sh && bash /setup.sh {task_context.base_commit}",
-    )
-
-    if result.exit_code != 0:
-        raise HTTPException(status_code=500, detail=result.result)
-
-    return SetupTaskResponse(status="ok")
+        return SetupTaskResponse(status="ok")
 
 
 @app.post("/evaluate-response/")
@@ -242,21 +241,20 @@ async def evaluate_instance(
     # Theres only one task id we need to validate since we are evaluating a single instance
     validated_task_id = validate_task_ids([request.task_id])[0]
 
-    daytona = AsyncDaytona(
-        config=DaytonaConfig(
-            api_key=x_api_key,
-            api_url=x_api_url,
-            target=x_target,
-        )
+    daytona_config = DaytonaConfig(
+        api_key=x_api_key,
+        api_url=x_api_url,
+        target=x_target,
     )
 
-    sandbox = await daytona.get(request.instance_id)
+    async with AsyncDaytona(config=daytona_config) as daytona:
+        sandbox = await daytona.get(request.instance_id)
 
-    test_output: str = await run_tests(sandbox, validated_task_id)
+        test_output: str = await run_tests(sandbox, validated_task_id)
 
-    final_result: EvaluationResult = grade_test_output(test_output, validated_task_id, request.instance_id)
+        final_result: EvaluationResult = grade_test_output(test_output, validated_task_id, request.instance_id)
 
-    return final_result
+        return final_result
 
 
 @app.post("/final-score/")
