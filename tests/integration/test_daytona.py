@@ -151,6 +151,7 @@ class TestDaytona:
             assert evaluation_result["resolved"] is True, (
                 f"Expected instance to be resolved. Result: {evaluation_result}"
             )
+            assert "prediction" in evaluation_result, "Expected prediction result"
 
     async def test_end_to_end(
         self,
