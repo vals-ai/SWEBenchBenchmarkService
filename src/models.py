@@ -40,8 +40,6 @@ class SetupTaskRequest(BaseModel):
 
 
 class EvaluationResult(BaseModel):
-    task_id: str
-    instance_id: str
     patch_successfully_applied: bool
     resolved: bool
     resolution_status: str

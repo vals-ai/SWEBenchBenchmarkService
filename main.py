@@ -219,8 +219,6 @@ async def evaluate_instance(
     curl -X POST http://<endpoint>/evaluate-instance/ -H "Content-Type: application/json" -H "X-Api-Key: <api_key>" -H "X-Api-Url: <api_url>" -H "X-Target: <target>" -d '{
         "task_id": "task_id_1", "instance_id": "instance_id_1"}'
     {
-        "task_id": "task_id_1",
-        "instance_id": "instance_id_1",
         "patch_successfully_applied": true,
         "resolved": true,
         "resolution_status": "RESOLVED_FULL",

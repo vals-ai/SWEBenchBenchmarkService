@@ -115,8 +115,6 @@ class TestFastApiServer:
 
     async def test_final_score(self) -> None:
         first_evaluation_result = EvaluationResult(
-            task_id="astropy__astropy-12907",
-            instance_id="astropy__astropy-12907",
             patch_successfully_applied=True,
             resolved=True,
             resolution_status="FULL",
