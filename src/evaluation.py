@@ -28,7 +28,7 @@ from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
 from src.models import EvaluationResult
 
 
-def grade_test_output(test_output: str, task_id: str, instance_id: str) -> "EvaluationResult":
+def grade_test_output(test_output: str, task_id: str, prediction: str | None) -> "EvaluationResult":
     """
     Grade test output in memory using SWE-bench's logic.
 
@@ -49,21 +49,19 @@ def grade_test_output(test_output: str, task_id: str, instance_id: str) -> "Eval
 
     if any(code in test_output for code in bad_codes):
         return EvaluationResult(
-            task_id=task_id,
-            instance_id=instance_id,
             patch_successfully_applied=False,
             resolved=False,
             resolution_status="NO",
+            prediction=prediction,
         )
 
     # Check for test output markers
     if not (START_TEST_OUTPUT in test_output and END_TEST_OUTPUT in test_output):
         return EvaluationResult(
-            task_id=task_id,
-            instance_id=instance_id,
             patch_successfully_applied=False,
             resolved=False,
             resolution_status="NO",
+            prediction=prediction,
         )
 
     # Get log parser for this repo
@@ -101,8 +99,7 @@ def grade_test_output(test_output: str, task_id: str, instance_id: str) -> "Eval
     p2p_score = compute_pass_to_pass(report)
 
     return EvaluationResult(
-        task_id=task_id,
-        instance_id=instance_id,
+        prediction=prediction,
         patch_successfully_applied=True,
         resolved=resolution_status == ResolvedStatus.FULL.value,
         resolution_status=resolution_status,

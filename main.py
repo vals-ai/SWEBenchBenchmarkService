@@ -219,8 +219,6 @@ async def evaluate_instance(
     curl -X POST http://<endpoint>/evaluate-instance/ -H "Content-Type: application/json" -H "X-Api-Key: <api_key>" -H "X-Api-Url: <api_url>" -H "X-Target: <target>" -d '{
         "task_id": "task_id_1", "instance_id": "instance_id_1"}'
     {
-        "task_id": "task_id_1",
-        "instance_id": "instance_id_1",
         "patch_successfully_applied": true,
         "resolved": true,
         "resolution_status": "RESOLVED_FULL",
@@ -250,9 +248,9 @@ async def evaluate_instance(
     async with AsyncDaytona(config=daytona_config) as daytona:
         sandbox = await daytona.get(request.instance_id)
 
-        test_output: str = await run_tests(sandbox, validated_task_id)
+        test_output, prediction = await run_tests(sandbox, validated_task_id)
 
-        final_result: EvaluationResult = grade_test_output(test_output, validated_task_id, request.instance_id)
+        final_result: EvaluationResult = grade_test_output(test_output, validated_task_id, prediction)
 
         return final_result
 

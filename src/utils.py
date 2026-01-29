@@ -254,14 +254,14 @@ def create_run_command(task_id: str) -> str:
     return run_command
 
 
-async def run_tests(sandbox: AsyncSandbox, task_id: str) -> str:
-    # Ensure newline exists at the end of the patch file
-    await sandbox.process.exec(
-        command="tail -c1 /tmp/patch.diff 2>/dev/null | grep -q $'\n' || printf '\n' >> /tmp/patch.diff",
-        cwd="/",
-    )
-
+async def run_tests(sandbox: AsyncSandbox, task_id: str) -> tuple[str, str | None]:
     evaluation_script: str = create_evaluation_script(task_id)
+
+    # Get the prediction from the harness
+    prediction_result = await sandbox.process.exec(
+        command="git add -N . && git diff HEAD",
+        cwd="/testbed",
+    )
 
     await sandbox.fs.upload_file(
         evaluation_script.encode("utf-8"),
@@ -271,15 +271,15 @@ async def run_tests(sandbox: AsyncSandbox, task_id: str) -> str:
     run_command: str = create_run_command(task_id)
 
     # TODO: Swap to session command
-    result: ExecuteResponse = await sandbox.process.exec(
+    eval_result: ExecuteResponse = await sandbox.process.exec(
         command=run_command,
         timeout=0,  # Run indefinitely
     )
 
-    if result.exit_code != 0:
-        raise ValueError(f"Error running tests for task {task_id}: {result.result}")
+    if eval_result.exit_code != 0:
+        raise ValueError(f"Error running tests for task {task_id}: {eval_result.result}")
 
-    return result.result
+    return eval_result.result, (prediction_result.result or None)
 
 
 def create_final_score(resolved_tasks: int, tasks_evaluated: int) -> float:
