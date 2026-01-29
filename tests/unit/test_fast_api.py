@@ -115,6 +115,7 @@ class TestFastApiServer:
 
     async def test_final_score(self) -> None:
         first_evaluation_result = EvaluationResult(
+            prediction=None,
             patch_successfully_applied=True,
             resolved=True,
             resolution_status="FULL",
