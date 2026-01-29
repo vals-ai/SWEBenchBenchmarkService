@@ -259,7 +259,8 @@ async def run_tests(sandbox: AsyncSandbox, task_id: str) -> tuple[str, str | Non
 
     # Get the prediction from the harness
     prediction_result = await sandbox.process.exec(
-        command="git diff /testbed",
+        command="git diff HEAD",
+        cwd="/testbed",
     )
 
     await sandbox.fs.upload_file(
