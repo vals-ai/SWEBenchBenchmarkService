@@ -40,6 +40,7 @@ class SetupTaskRequest(BaseModel):
 
 
 class EvaluationResult(BaseModel):
+    prediction: str | None
     patch_successfully_applied: bool
     resolved: bool
     resolution_status: str

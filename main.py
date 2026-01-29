@@ -248,9 +248,9 @@ async def evaluate_instance(
     async with AsyncDaytona(config=daytona_config) as daytona:
         sandbox = await daytona.get(request.instance_id)
 
-        test_output: str = await run_tests(sandbox, validated_task_id)
+        test_output, prediction = await run_tests(sandbox, validated_task_id)
 
-        final_result: EvaluationResult = grade_test_output(test_output, validated_task_id, request.instance_id)
+        final_result: EvaluationResult = grade_test_output(test_output, validated_task_id, prediction)
 
         return final_result
 
