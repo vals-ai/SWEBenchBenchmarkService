@@ -26,7 +26,7 @@ benchmark-service:
 	docker run -d --name $(IMAGE_NAME) -p 8000:8000 --privileged $(IMAGE_NAME):$(IMAGE_TAG)
 
 fastapi:
-	uv run fastapi run main.py --host 0.0.0.0 --port 8000
+	uv run fastapi run main.py --host 0.0.0.0 --port 8001
 
 test-unit:
 	uv run pytest tests/unit -vv

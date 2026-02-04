@@ -8,7 +8,7 @@ make install
 source .venv/bin/activate
 
 # Download tasks from github registry locally
-make task-setup
+make setup
 
 # Start fastapi server for local testing
 make fastapi
@@ -71,7 +71,7 @@ We use the same test script and evaluation methodology as the originally [SWEBen
 
 There have been a few tasks with reported bugs that basically make the task fail no matter what.
 
-- [astropy__astropy-7606](https://github.com/SWE-bench/SWE-bench/issues/223)
-- [astropy__astropy-8707](https://github.com/SWE-bench/SWE-bench/issues/342)
-- [astropy__astropy-8872](https://github.com/SWE-bench/SWE-bench/issues/343)
-- [django__django-10097](https://github.com/swe-bench/SWE-bench/issues/267)
+-- [astropy__astropy-7606](https://github.com/SWE-bench/SWE-bench/issues/223)
+-- [astropy__astropy-8707](https://github.com/SWE-bench/SWE-bench/issues/342)
+-- [astropy__astropy-8872](https://github.com/SWE-bench/SWE-bench/issues/343)
+-- [django__django-10097](https://github.com/swe-bench/SWE-bench/issues/267)

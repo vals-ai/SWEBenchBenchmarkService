@@ -61,9 +61,7 @@ def filter_tasks(filter: TaskFilter) -> list[str]:
     """
 
     if not _DISK_PATH.exists():
-        raise FileNotFoundError(
-            f"SWE-bench tasks not found at `{_DISK_PATH}`. Run `make task-setup` to download tasks."
-        )
+        raise FileNotFoundError(f"SWE-bench tasks not found at `{_DISK_PATH}`. Run `make setup` to download tasks.")
 
     dataset_map = load_dataset_from_disk()
 
@@ -72,7 +70,7 @@ def filter_tasks(filter: TaskFilter) -> list[str]:
     print(f"Found `{len(task_ids)}` tasks in `{_DISK_PATH}`")
 
     if not task_ids:
-        raise ValueError(f"No tasks found in `{_DISK_PATH}`. Run `make task-setup` to download tasks.")
+        raise ValueError(f"No tasks found in `{_DISK_PATH}`. Run `make setup` to download tasks.")
 
     if not filter.task_ids and not filter.slice_str:
         return task_ids
