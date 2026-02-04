@@ -2,7 +2,6 @@ import traceback
 from pathlib import Path
 
 from daytona import AsyncDaytona, DaytonaConfig
-from daytona.common.process import ExecuteResponse
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 
 from src.evaluation import grade_test_output
@@ -203,12 +202,9 @@ async def setup_task(
             "/setup.sh",
         )
 
-        result: ExecuteResponse = await sandbox.process.exec(
+        await sandbox.process.exec(
             command=f"chmod +x /setup.sh && bash /setup.sh {task_context.base_commit}",
         )
-
-        if result.exit_code != 0:
-            raise HTTPException(status_code=500, detail=result.result)
 
         return SetupTaskResponse(status="ok")
 

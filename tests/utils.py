@@ -21,7 +21,7 @@ class BenchmarkServiceTestClient:
     """
 
     _client: TestClient
-    _BASE_URL: str = "http://localhost:8000"
+    _BASE_URL: str = "http://localhost:8001"
     _TIMEOUT: int | None = None
 
     def __init__(self, app: FastAPI) -> None:
