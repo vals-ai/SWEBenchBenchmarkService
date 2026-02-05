@@ -14,6 +14,7 @@ from src.models import (
     FinalScoreResponse,
     HealthCheckResponse,
     Metadata,
+    Resources,
     RetrieveTaskResponse,
     SetupTaskRequest,
     SetupTaskResponse,
@@ -127,6 +128,7 @@ async def retrieve_task(
     - 500 Internal Server Error if the task is not retrieved successfully
 
     """
+    larger_tasks: list[str] = ["scikit-learn__scikit-learn-14710", "psf__requests-2317"]
 
     logger.info(f"Retrieve task endpoint request received: {task_id}, {skip_validation}")
 
@@ -134,11 +136,24 @@ async def retrieve_task(
 
     docker_image, problem_statement, request_setup = await fetch_docker_image(validated_task_id, skip_validation)
 
+    # Default resources required to run a task
+    resources = Resources(
+        vcpu=2,
+        memory=4,
+        disk=10,
+    )
+
+    # For these tasks, we need a little more
+    if validated_task_id in larger_tasks:
+        resources.vcpu = 4
+        resources.memory = 8
+
     return RetrieveTaskResponse(
         docker_image=docker_image,
         problem_statement=problem_statement,
         request_setup=request_setup,
         cwd="/testbed",
+        resources=resources,
     )
 
 

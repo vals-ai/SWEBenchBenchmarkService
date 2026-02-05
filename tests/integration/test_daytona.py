@@ -178,6 +178,11 @@ class TestDaytona:
             "problem_statement": problem_statement,
             "request_setup": True,
             "cwd": "/testbed",
+            "resources": {
+                "vcpu": 2,
+                "memory": 4,
+                "disk": 10,
+            },
         }, "Expected task to be retrieved"
 
         # Create sandbox from the provided docker image

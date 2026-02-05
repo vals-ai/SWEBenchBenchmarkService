@@ -83,11 +83,16 @@ class TestFastApiServer:
 
         assert response.status_code == 200
 
-        expected_response: dict[str, str | bool] = {
+        expected_response = {
             "docker_image": registry_image_format.format(instance_id=valid_task_id),
             "problem_statement": problem_statement,
             "request_setup": True,
             "cwd": "/testbed",
+            "resources": {
+                "vcpu": 2,
+                "memory": 4,
+                "disk": 10,
+            },
         }
 
         assert response.json() == expected_response
@@ -100,11 +105,16 @@ class TestFastApiServer:
 
         problem_statement_django: str = dataset_map["django__django-12050"].get("problem_statement", "")
 
-        expected_response_django: dict[str, str | bool] = {
+        expected_response_django = {
             "docker_image": registry_image_format.format(instance_id="django__django-12050"),
             "problem_statement": problem_statement_django,
             "request_setup": True,
             "cwd": "/testbed",
+            "resources": {
+                "vcpu": 2,
+                "memory": 4,
+                "disk": 10,
+            },
         }
 
         assert response.status_code == 200, f"Expected 200 OK {response.json()}"
