@@ -213,7 +213,7 @@ async def setup_task(
 
         def on_output(text: str) -> None:
             if text.strip():
-                log_queue.put_nowait(json.dumps({"type": "log", "message": text}))
+                log_queue.put_nowait(json.dumps({"type": "message", "data": text}))
 
         log_task = asyncio.create_task(log_output(log_queue, websocket))
 

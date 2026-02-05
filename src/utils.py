@@ -326,7 +326,7 @@ async def run_tests(sandbox: AsyncSandbox, task_id: str, websocket: WebSocket) -
         cwd="/testbed",
     )
 
-    await websocket.send_json({"type": "log", "message": prediction_result.result})
+    await websocket.send_json({"type": "message", "data": prediction_result.result})
 
     await sandbox.fs.upload_file(
         evaluation_script.encode("utf-8"),
@@ -344,7 +344,7 @@ async def run_tests(sandbox: AsyncSandbox, task_id: str, websocket: WebSocket) -
         if text.strip():
             evaluation_result += text
 
-            log_queue.put_nowait(json.dumps({"type": "log", "message": text}))
+            log_queue.put_nowait(json.dumps({"type": "message", "data": text}))
 
     log_task = asyncio.create_task(log_output(log_queue, websocket))
 
@@ -352,7 +352,7 @@ async def run_tests(sandbox: AsyncSandbox, task_id: str, websocket: WebSocket) -
 
     await log_task
 
-    await websocket.send_json({"type": "log", "message": evaluation_result})
+    await websocket.send_json({"type": "message", "data": evaluation_result})
 
     return evaluation_result, (prediction_result.result or None)
 
