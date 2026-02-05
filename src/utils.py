@@ -306,6 +306,17 @@ async def stream_command_output(
             pass
 
 
+async def log_output(log_queue: asyncio.Queue[str], websocket: WebSocket) -> None:
+    while True:
+        try:
+            message = await log_queue.get()
+
+            await websocket.send_json(json.loads(message))
+        except asyncio.CancelledError:
+            logger.error("Log output task cancelled unexpectedly")
+            break
+
+
 async def run_tests(sandbox: AsyncSandbox, task_id: str, websocket: WebSocket) -> tuple[str, str | None]:
     evaluation_script: str = create_evaluation_script(task_id)
 
@@ -335,17 +346,7 @@ async def run_tests(sandbox: AsyncSandbox, task_id: str, websocket: WebSocket) -
 
             log_queue.put_nowait(json.dumps({"type": "log", "message": text}))
 
-    async def log_output() -> None:
-        while True:
-            try:
-                message = await log_queue.get()
-
-                await websocket.send_json(json.loads(message))
-            except asyncio.CancelledError:
-                logger.error("Log output task cancelled unexpectedly")
-                break
-
-    log_task = asyncio.create_task(log_output())
+    log_task = asyncio.create_task(log_output(log_queue, websocket))
 
     await stream_command_output(sandbox, run_command, on_output)
 

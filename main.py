@@ -28,6 +28,7 @@ from src.utils import (
     create_final_score,
     fetch_docker_image,
     filter_tasks,
+    log_output,
     run_tests,
     stream_command_output,
     validate_task_ids,
@@ -214,17 +215,7 @@ async def setup_task(
             if text.strip():
                 log_queue.put_nowait(json.dumps({"type": "log", "message": text}))
 
-        async def log_output() -> None:
-            while True:
-                try:
-                    message = await log_queue.get()
-
-                    await websocket.send_json(json.loads(message))
-                except asyncio.CancelledError:
-                    logger.error("Log output task cancelled unexpectedly")
-                    break
-
-        log_task = asyncio.create_task(log_output())
+        log_task = asyncio.create_task(log_output(log_queue, websocket))
 
         await stream_command_output(
             sandbox, f"chmod +x /setup.sh && bash /setup.sh {task_context.base_commit}", on_output
