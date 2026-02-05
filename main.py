@@ -228,7 +228,7 @@ async def setup_task(
         except asyncio.CancelledError:
             pass
 
-        await websocket.send_json({"type": "result", "data": json.dumps(SetupTaskResponse(status="ok").model_dump())})
+        await websocket.send_json({"type": "result", "data": SetupTaskResponse(status="ok").model_dump()})
 
         await websocket.close()
 
