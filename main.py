@@ -164,7 +164,7 @@ async def retrieve_task(
 @app.websocket("/ws/setup-task")
 async def setup_task(
     websocket: WebSocket,
-) -> SetupTaskResponse:
+):
     """
     Setup the task by running the setup script for the task.
 
@@ -221,9 +221,16 @@ async def setup_task(
             sandbox, f"chmod +x /setup.sh && bash /setup.sh {task_context.base_commit}", on_output
         )
 
-        await log_task
+        log_task.cancel()
 
-        return SetupTaskResponse(status="ok")
+        try:
+            await log_task
+        except asyncio.CancelledError:
+            pass
+
+        await websocket.send_json({"type": "result", "data": json.dumps(SetupTaskResponse(status="ok").model_dump())})
+
+        await websocket.close()
 
 
 @app.post("/evaluate-response/")

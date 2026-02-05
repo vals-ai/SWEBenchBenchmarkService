@@ -313,7 +313,6 @@ async def log_output(log_queue: asyncio.Queue[str], websocket: WebSocket) -> Non
 
             await websocket.send_json(json.loads(message))
         except asyncio.CancelledError:
-            logger.error("Log output task cancelled unexpectedly")
             break
 
 
@@ -350,7 +349,12 @@ async def run_tests(sandbox: AsyncSandbox, task_id: str, websocket: WebSocket) -
 
     await stream_command_output(sandbox, run_command, on_output)
 
-    await log_task
+    log_task.cancel()
+
+    try:
+        await log_task
+    except asyncio.CancelledError:
+        pass
 
     await websocket.send_json({"type": "message", "data": evaluation_result})
 

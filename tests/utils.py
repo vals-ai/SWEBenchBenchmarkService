@@ -3,6 +3,7 @@ import json
 import logging
 import os
 from asyncio import Task
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from daytona import AsyncSandbox, ExecuteResponse
@@ -10,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
 from starlette.testclient import WebSocketTestSession
+from starlette.websockets import WebSocketDisconnect
 
 from src.logger import get_logger
 from src.models import EvaluationResult
@@ -29,17 +31,15 @@ class BenchmarkServiceTestClient:
     def __init__(self, app: FastAPI) -> None:
         self._client = TestClient(app)
 
-    async def _receive_websocket_message(self, websocket: WebSocketTestSession) -> dict[str, Any] | str | None:
-        try:
-            message: dict[str, Any] = await websocket.receive_json()
-            if message["type"] == "message":
-                logger.info(f"Received websocket message: {message['data'][:100]}...")
-                return message
+    def _receive_websocket_message(self, websocket: WebSocketTestSession) -> str | dict[str, Any]:
+        message: dict[str, Any] = websocket.receive_json()
+        if message["type"] == "message":
+            return message["data"]
 
-            if message["type"] == "result":
-                return json.loads(message["data"])
-        except Exception:
-            return None
+        if message["type"] == "result":
+            return json.loads(message["data"])
+
+        raise ValueError(f"Unknown websocket message type: {message['type']}")
 
     async def request_health_check(self) -> dict[str, str]:
         """
@@ -93,7 +93,7 @@ class BenchmarkServiceTestClient:
 
         return response.json()
 
-    async def request_setup_task(self, task_id: str, instance_id: str) -> dict[str, Any]:
+    async def request_setup_task(self, task_id: str, instance_id: str) -> AsyncGenerator[dict[str, Any] | str]:
         """
         Requests setup task from benchmark service via WebSocket
         """
@@ -115,24 +115,18 @@ class BenchmarkServiceTestClient:
             },
         }
 
-        messages: list[dict[str, Any] | str] = []
-
         with self._client.websocket_connect("/ws/setup-task") as websocket:
             websocket.send_json(json_data)
 
             while True:
-                message = await self._receive_websocket_message(websocket)
+                try:
+                    message = self._receive_websocket_message(websocket)
+                    yield message
+                except WebSocketDisconnect:
+                    logger.info("WebSocket closed for setup task")
+                    break
 
-                if message is None:
-                    raise Exception("No message received from setup task")
-
-                if isinstance(message, str):
-                    messages.append(message)
-                    continue
-
-                return message
-
-    async def request_evaluate_instance(self, task_id: str, instance_id: str) -> dict[str, Any]:
+    async def request_evaluate_instance(self, task_id: str, instance_id: str) -> AsyncGenerator[dict[str, Any] | str]:
         """
         Requests evaluate instance from benchmark service via WebSocket
         """
@@ -154,22 +148,16 @@ class BenchmarkServiceTestClient:
             },
         }
 
-        messages: list[dict[str, Any] | str] = []
-
         with self._client.websocket_connect("/ws/evaluate-instance/") as websocket:
             websocket.send_json(json_data)
 
             while True:
-                message = await self._receive_websocket_message(websocket)
-
-                if message is None:
-                    raise Exception("No message received from evaluate instance")
-
-                if isinstance(message, str):
-                    messages.append(message)
-                    continue
-
-                return message
+                try:
+                    message = self._receive_websocket_message(websocket)
+                    yield message
+                except WebSocketDisconnect:
+                    logger.info("WebSocket closed for evaluate instance")
+                    break
 
     async def request_final_score(self, evaluation_results: dict[str, EvaluationResult | None]) -> dict[str, Any]:
         """
