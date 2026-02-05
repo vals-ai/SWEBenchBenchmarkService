@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 from asyncio import Task
@@ -8,6 +9,7 @@ from daytona import AsyncSandbox, ExecuteResponse
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx import AsyncClient
+from starlette.testclient import WebSocketTestSession
 
 from src.logger import get_logger
 from src.models import EvaluationResult
@@ -26,6 +28,18 @@ class BenchmarkServiceTestClient:
 
     def __init__(self, app: FastAPI) -> None:
         self._client = TestClient(app)
+
+    async def _receive_websocket_message(self, websocket: WebSocketTestSession) -> dict[str, Any] | str | None:
+        try:
+            message: dict[str, Any] = await websocket.receive_json()
+            if message["type"] == "message":
+                logger.info(f"Received websocket message: {message['data'][:100]}...")
+                return message
+
+            if message["type"] == "result":
+                return json.loads(message["data"])
+        except Exception:
+            return None
 
     async def request_health_check(self) -> dict[str, str]:
         """
@@ -79,9 +93,9 @@ class BenchmarkServiceTestClient:
 
         return response.json()
 
-    async def request_setup_task(self, task_id: str, instance_id: str) -> dict[str, str]:
+    async def request_setup_task(self, task_id: str, instance_id: str) -> dict[str, Any]:
         """
-        Requests setup task from benchmark service
+        Requests setup task from benchmark service via WebSocket
         """
 
         api_key = os.getenv("DAYTONA_API_KEY")
@@ -91,19 +105,36 @@ class BenchmarkServiceTestClient:
         if not api_key or not api_url or not target:
             raise ValueError("API key, API URL, and target are required")
 
-        json_data = {"task_id": task_id, "instance_id": instance_id}
-        headers = {"X-Api-Key": api_key, "X-Api-Url": api_url, "X-Target": target}
+        json_data = {
+            "task_id": task_id,
+            "instance_id": instance_id,
+            "headers": {
+                "x_api_key": api_key,
+                "x_api_url": api_url,
+                "x_target": target,
+            },
+        }
 
-        async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
-            response = await client.post("/setup-task", json=json_data, headers=headers)
+        messages: list[dict[str, Any] | str] = []
 
-            logger.info(f"Setup task response: {response.text}")
+        with self._client.websocket_connect("/ws/setup-task") as websocket:
+            websocket.send_json(json_data)
 
-            return response.json()
+            while True:
+                message = await self._receive_websocket_message(websocket)
 
-    async def request_evaluate_instance(self, task_id: str, instance_id: str) -> dict[str, str]:
+                if message is None:
+                    raise Exception("No message received from setup task")
+
+                if isinstance(message, str):
+                    messages.append(message)
+                    continue
+
+                return message
+
+    async def request_evaluate_instance(self, task_id: str, instance_id: str) -> dict[str, Any]:
         """
-        Requests evaluate instance from benchmark service
+        Requests evaluate instance from benchmark service via WebSocket
         """
 
         api_key = os.getenv("DAYTONA_API_KEY")
@@ -113,20 +144,32 @@ class BenchmarkServiceTestClient:
         if not api_key or not api_url or not target:
             raise Exception("API key, API URL, and target are required")
 
-        json_data = {"task_id": task_id, "instance_id": instance_id}
-        headers = {"X-Api-Key": api_key, "X-Api-Url": api_url, "X-Target": target}
+        json_data = {
+            "task_id": task_id,
+            "instance_id": instance_id,
+            "headers": {
+                "x_api_key": api_key,
+                "x_api_url": api_url,
+                "x_target": target,
+            },
+        }
 
-        async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
-            response = await client.post("/evaluate-instance/", json=json_data, headers=headers)
+        messages: list[dict[str, Any] | str] = []
 
-            logger.info(f"Evaluate instance response: {response.text}")
+        with self._client.websocket_connect("/ws/evaluate-instance/") as websocket:
+            websocket.send_json(json_data)
 
-            if response.status_code != 200:
-                raise Exception(
-                    f"Evaluate instance failed with status code {response.status_code}, response: {response.text}"
-                )
+            while True:
+                message = await self._receive_websocket_message(websocket)
 
-            return response.json()
+                if message is None:
+                    raise Exception("No message received from evaluate instance")
+
+                if isinstance(message, str):
+                    messages.append(message)
+                    continue
+
+                return message
 
     async def request_final_score(self, evaluation_results: dict[str, EvaluationResult | None]) -> dict[str, Any]:
         """
