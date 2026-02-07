@@ -266,9 +266,12 @@ async def stream_command_output(
     sandbox: AsyncSandbox,
     command: str,
     on_output: Callable[[str], None],
+    ignore_error: bool = False,
 ) -> None:
     """
     Execute a command inside of a sandbox using a session and stream the output to the given callbacks.
+
+    # NOTE: ignore_error is used for specifically the setup script which some may raise for but nothing we can change about it.
     """
     session_id = f"{sandbox.id}-{str(uuid.uuid4())}"
     try:
@@ -283,21 +286,17 @@ async def stream_command_output(
         if not cmd_id:
             raise ValueError(f"Failed to execute command {command} in session {session_id}")
 
-        log_task = asyncio.create_task(
-            sandbox.process.get_session_command_logs_async(
-                session_id=session_id,
-                command_id=cmd_id,
-                on_stdout=on_output,
-                on_stderr=on_output,
-            )
+        await sandbox.process.get_session_command_logs_async(
+            session_id=session_id,
+            command_id=cmd_id,
+            on_stdout=on_output,
+            on_stderr=on_output,
         )
-
-        await log_task
 
         cmd = await sandbox.process.get_session_command(session_id, cmd_id)
 
-        if cmd.exit_code != 0:
-            raise ValueError(f"Failed to run command {command}, exit code: {cmd.exit_code}")
+        if cmd.exit_code != 0 and not ignore_error:
+            raise ValueError(f"Failed to run command {command} on instance {sandbox.id}, exit code: {cmd.exit_code}")
 
     finally:
         try:

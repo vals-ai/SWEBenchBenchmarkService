@@ -226,7 +226,7 @@ async def setup_task(
         log_task = asyncio.create_task(log_output(log_queue, websocket))
 
         await stream_command_output(
-            sandbox, f"chmod +x /setup.sh && bash /setup.sh {task_context.base_commit}", on_output
+            sandbox, f"chmod +x /setup.sh && bash /setup.sh {task_context.base_commit}", on_output, ignore_error=True
         )
 
         log_task.cancel()
@@ -304,7 +304,7 @@ async def evaluate_instance(websocket: WebSocket):
 
         final_result: EvaluationResult = grade_test_output(test_output, validated_task_id, prediction)
 
-        await websocket.send_json({"type": "result", "data": final_result.model_dump_json(indent=4, exclude_none=True)})
+        await websocket.send_json({"type": "result", "data": final_result.model_dump(exclude_none=True)})
 
         await websocket.close()
 
