@@ -108,14 +108,15 @@ class BenchmarkServiceTestClient:
         json_data = {
             "task_id": task_id,
             "instance_id": instance_id,
-            "headers": {
-                "x_api_key": api_key,
-                "x_api_url": api_url,
-                "x_target": target,
-            },
         }
 
-        with self._client.websocket_connect("/ws/setup-task") as websocket:
+        headers = {
+            "x-api-key": api_key,
+            "x-api-url": api_url,
+            "x-target": target,
+        }
+
+        with self._client.websocket_connect("/ws/setup-task", headers=headers) as websocket:
             websocket.send_json(json_data)
 
             while True:
@@ -141,14 +142,15 @@ class BenchmarkServiceTestClient:
         json_data = {
             "task_id": task_id,
             "instance_id": instance_id,
-            "headers": {
-                "x_api_key": api_key,
-                "x_api_url": api_url,
-                "x_target": target,
-            },
         }
 
-        with self._client.websocket_connect("/ws/evaluate-instance/") as websocket:
+        headers = {
+            "x-api-key": api_key,
+            "x-api-url": api_url,
+            "x-target": target,
+        }
+
+        with self._client.websocket_connect("/ws/evaluate-instance/", headers=headers) as websocket:
             websocket.send_json(json_data)
 
             while True:

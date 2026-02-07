@@ -1,5 +1,6 @@
 import asyncio
 import json
+import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from functools import lru_cache
@@ -269,21 +270,22 @@ async def stream_command_output(
     """
     Execute a command inside of a sandbox using a session and stream the output to the given callbacks.
     """
+    session_id = f"{sandbox.id}-{str(uuid.uuid4())}"
     try:
-        await sandbox.process.create_session(sandbox.id)
+        await sandbox.process.create_session(session_id)
 
         session_exec_resp = await sandbox.process.execute_session_command(
-            sandbox.id, SessionExecuteRequest(command=command, run_async=True)
+            session_id, SessionExecuteRequest(command=command, run_async=True)
         )
 
         cmd_id = session_exec_resp.cmd_id
 
         if not cmd_id:
-            raise ValueError(f"Failed to execute command {command} in session {sandbox.id}")
+            raise ValueError(f"Failed to execute command {command} in session {session_id}")
 
         log_task = asyncio.create_task(
             sandbox.process.get_session_command_logs_async(
-                session_id=sandbox.id,
+                session_id=session_id,
                 command_id=cmd_id,
                 on_stdout=on_output,
                 on_stderr=on_output,
@@ -292,17 +294,17 @@ async def stream_command_output(
 
         await log_task
 
-        cmd = await sandbox.process.get_session_command(sandbox.id, cmd_id)
+        cmd = await sandbox.process.get_session_command(session_id, cmd_id)
 
         if cmd.exit_code != 0:
             raise ValueError(f"Failed to run command {command}, exit code: {cmd.exit_code}")
 
     finally:
         try:
-            await sandbox.process.delete_session(sandbox.id)
+            await sandbox.process.delete_session(session_id)
         except Exception:
             # NOTE: If we kill the sandbox this sometimes errors
-            logger.error(f"Caught failure to delete session `{sandbox.id}`")
+            logger.error(f"Caught failure to delete session `{session_id}`")
             pass
 
 

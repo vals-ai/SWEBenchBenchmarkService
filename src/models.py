@@ -24,16 +24,9 @@ class TaskFilter(BaseModel):
         return slice(start, stop, step)
 
 
-class HeaderRequest(BaseModel):
-    x_api_key: str
-    x_api_url: str
-    x_target: str
-
-
 class EvaluateInstanceRequest(BaseModel):
     task_id: str
     instance_id: str
-    headers: HeaderRequest
 
 
 class EvaluateResponseRequest(BaseModel):
@@ -44,7 +37,6 @@ class EvaluateResponseRequest(BaseModel):
 class SetupTaskRequest(BaseModel):
     task_id: str
     instance_id: str
-    headers: HeaderRequest
 
 
 class EvaluationResult(BaseModel):

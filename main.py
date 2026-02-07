@@ -182,16 +182,24 @@ async def setup_task(
 
     await websocket.accept()
 
+    api_key = websocket.headers.get("x-api-key")
+    api_url = websocket.headers.get("x-api-url")
+    target = websocket.headers.get("x-target")
+
+    if not api_key or not api_url or not target:
+        await websocket.close(code=1008, reason="Missing required headers: x-api-key, x-api-url, x-target")
+        return
+
     data = await websocket.receive_json()
 
     request = SetupTaskRequest(**data)
 
-    logger.info(f"Setup task endpoint request received: {request.model_dump_json(indent=4, exclude={'headers'})}")
+    logger.info(f"Setup task endpoint request received: {request.model_dump_json(indent=4)}")
 
     daytona_config = DaytonaConfig(
-        api_key=request.headers.x_api_key,
-        api_url=request.headers.x_api_url,
-        target=request.headers.x_target,
+        api_key=api_key,
+        api_url=api_url,
+        target=target,
     )
 
     async with AsyncDaytona(config=daytona_config) as daytona:
@@ -240,7 +248,7 @@ def evaluate_response(_request: EvaluateResponseRequest):
     )
 
 
-@app.websocket("/ws/evaluate-instance/")
+@app.websocket("/ws/evaluate-instance")
 async def evaluate_instance(websocket: WebSocket):
     """
     Executes tests and grades the results for an instance.
@@ -266,21 +274,27 @@ async def evaluate_instance(websocket: WebSocket):
 
     await websocket.accept()
 
+    api_key = websocket.headers.get("x-api-key")
+    api_url = websocket.headers.get("x-api-url")
+    target = websocket.headers.get("x-target")
+
+    if not api_key or not api_url or not target:
+        await websocket.close(code=1008, reason="Missing required headers: x-api-key, x-api-url, x-target")
+        return
+
     data = await websocket.receive_json()
 
     request = EvaluateInstanceRequest(**data)
 
-    logger.info(
-        f"Evaluate instance endpoint request received: {request.model_dump_json(indent=4, exclude={'headers'})}"
-    )
+    logger.info(f"Evaluate instance endpoint request received: {request.model_dump_json(indent=4)}")
 
     # Theres only one task id we need to validate since we are evaluating a single instance
     validated_task_id = validate_task_ids([request.task_id])[0]
 
     daytona_config = DaytonaConfig(
-        api_key=request.headers.x_api_key,
-        api_url=request.headers.x_api_url,
-        target=request.headers.x_target,
+        api_key=api_key,
+        api_url=api_url,
+        target=target,
     )
 
     async with AsyncDaytona(config=daytona_config) as daytona:
