@@ -10,11 +10,11 @@ source .venv/bin/activate
 # Download tasks from github registry locally
 make setup
 
-# Start fastapi server for local testing
-make fastapi
+# Start local server
+make benchmark-service-local
 ```
 
-Documentation can be found at `http://127.0.0.1:8000/docs` once you start the fastapi server locally
+Documentation can be found at `http://127.0.0.1:8000/docs` once you start the local server
 
 also compiled into `make quick-start`
 
