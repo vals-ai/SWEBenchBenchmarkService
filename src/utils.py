@@ -1,11 +1,21 @@
 import asyncio
+import json
+import uuid
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, AsyncGenerator, cast
 
 from datasets import load_from_disk  # type: ignore
-from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, ExecuteResponse, Resources
+from daytona import (
+    AsyncDaytona,
+    AsyncSandbox,
+    CreateSandboxFromImageParams,
+    Resources,
+    SessionExecuteRequest,
+)
+from fastapi import WebSocket
 from swebench.harness.constants import MAP_REPO_VERSION_TO_SPECS
 from swebench.harness.test_spec.test_spec import TestSpec, make_test_spec
 
@@ -252,7 +262,62 @@ def create_run_command(task_id: str) -> str:
     return run_command
 
 
-async def run_tests(sandbox: AsyncSandbox, task_id: str) -> tuple[str, str | None]:
+async def stream_command_output(
+    sandbox: AsyncSandbox,
+    command: str,
+    on_output: Callable[[str], None],
+    ignore_error: bool = False,
+) -> None:
+    """
+    Execute a command inside of a sandbox using a session and stream the output to the given callbacks.
+
+    # NOTE: ignore_error is used for specifically the setup script which some may raise for but nothing we can change about it.
+    """
+    session_id = f"{sandbox.id}-{str(uuid.uuid4())}"
+    try:
+        await sandbox.process.create_session(session_id)
+
+        session_exec_resp = await sandbox.process.execute_session_command(
+            session_id, SessionExecuteRequest(command=command, run_async=True)
+        )
+
+        cmd_id = session_exec_resp.cmd_id
+
+        if not cmd_id:
+            raise ValueError(f"Failed to execute command {command} in session {session_id}")
+
+        await sandbox.process.get_session_command_logs_async(
+            session_id=session_id,
+            command_id=cmd_id,
+            on_stdout=on_output,
+            on_stderr=on_output,
+        )
+
+        cmd = await sandbox.process.get_session_command(session_id, cmd_id)
+
+        if cmd.exit_code != 0 and not ignore_error:
+            raise ValueError(f"Failed to run command {command} on instance {sandbox.id}, exit code: {cmd.exit_code}")
+
+    finally:
+        try:
+            await sandbox.process.delete_session(session_id)
+        except Exception:
+            # NOTE: If we kill the sandbox this sometimes errors
+            logger.error(f"Caught failure to delete session `{session_id}`")
+            pass
+
+
+async def log_output(log_queue: asyncio.Queue[str], websocket: WebSocket) -> None:
+    while True:
+        try:
+            message = await log_queue.get()
+
+            await websocket.send_json(json.loads(message))
+        except asyncio.CancelledError:
+            break
+
+
+async def run_tests(sandbox: AsyncSandbox, task_id: str, websocket: WebSocket) -> tuple[str, str | None]:
     evaluation_script: str = create_evaluation_script(task_id)
 
     # Get the prediction from the harness
@@ -261,6 +326,8 @@ async def run_tests(sandbox: AsyncSandbox, task_id: str) -> tuple[str, str | Non
         cwd="/testbed",
     )
 
+    await websocket.send_json({"type": "message", "data": prediction_result.result})
+
     await sandbox.fs.upload_file(
         evaluation_script.encode("utf-8"),
         "/root/eval.sh",
@@ -268,16 +335,31 @@ async def run_tests(sandbox: AsyncSandbox, task_id: str) -> tuple[str, str | Non
 
     run_command: str = create_run_command(task_id)
 
-    # TODO: Swap to session command
-    eval_result: ExecuteResponse = await sandbox.process.exec(
-        command=run_command,
-        timeout=0,  # Run indefinitely
-    )
+    log_queue: asyncio.Queue[str] = asyncio.Queue()
+    evaluation_result: str = ""
 
-    if eval_result.exit_code != 0:
-        raise ValueError(f"Error running tests for task {task_id}: {eval_result.result}")
+    def on_output(text: str) -> None:
+        nonlocal evaluation_result
 
-    return eval_result.result, (prediction_result.result or None)
+        if text.strip():
+            evaluation_result += text
+
+            log_queue.put_nowait(json.dumps({"type": "message", "data": text}))
+
+    log_task = asyncio.create_task(log_output(log_queue, websocket))
+
+    await stream_command_output(sandbox, run_command, on_output)
+
+    log_task.cancel()
+
+    try:
+        await log_task
+    except asyncio.CancelledError:
+        pass
+
+    await websocket.send_json({"type": "message", "data": evaluation_result})
+
+    return evaluation_result, (prediction_result.result or None)
 
 
 def create_final_score(resolved_tasks: int, tasks_evaluated: int) -> float:

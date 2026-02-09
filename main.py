@@ -1,8 +1,10 @@
+import asyncio
+import json
 import traceback
 from pathlib import Path
 
 from daytona import AsyncDaytona, DaytonaConfig
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 
 from src.evaluation import grade_test_output
 from src.logger import get_logger
@@ -26,7 +28,9 @@ from src.utils import (
     create_final_score,
     fetch_docker_image,
     filter_tasks,
+    log_output,
     run_tests,
+    stream_command_output,
     validate_task_ids,
 )
 
@@ -157,13 +161,10 @@ async def retrieve_task(
     )
 
 
-@app.post("/setup-task")
+@app.websocket("/ws/setup-task")
 async def setup_task(
-    request: SetupTaskRequest,
-    x_api_key: str = Header(...),
-    x_api_url: str = Header(...),
-    x_target: str = Header(...),
-) -> SetupTaskResponse:
+    websocket: WebSocket,
+):
     """
     Setup the task by running the setup script for the task.
 
@@ -179,12 +180,26 @@ async def setup_task(
 
     """
 
+    await websocket.accept()
+
+    api_key = websocket.headers.get("x-api-key")
+    api_url = websocket.headers.get("x-api-url")
+    target = websocket.headers.get("x-target")
+
+    if not api_key or not api_url or not target:
+        await websocket.close(code=1008, reason="Missing required headers: x-api-key, x-api-url, x-target")
+        return
+
+    data = await websocket.receive_json()
+
+    request = SetupTaskRequest(**data)
+
     logger.info(f"Setup task endpoint request received: {request.model_dump_json(indent=4)}")
 
     daytona_config = DaytonaConfig(
-        api_key=x_api_key,
-        api_url=x_api_url,
-        target=x_target,
+        api_key=api_key,
+        api_url=api_url,
+        target=target,
     )
 
     async with AsyncDaytona(config=daytona_config) as daytona:
@@ -202,11 +217,28 @@ async def setup_task(
             "/setup.sh",
         )
 
-        await sandbox.process.exec(
-            command=f"chmod +x /setup.sh && bash /setup.sh {task_context.base_commit}",
+        log_queue: asyncio.Queue[str] = asyncio.Queue()
+
+        def on_output(text: str) -> None:
+            if text.strip():
+                log_queue.put_nowait(json.dumps({"type": "message", "data": text}))
+
+        log_task = asyncio.create_task(log_output(log_queue, websocket))
+
+        await stream_command_output(
+            sandbox, f"chmod +x /setup.sh && bash /setup.sh {task_context.base_commit}", on_output, ignore_error=True
         )
 
-        return SetupTaskResponse(status="ok")
+        log_task.cancel()
+
+        try:
+            await log_task
+        except asyncio.CancelledError:
+            pass
+
+        await websocket.send_json({"type": "result", "data": SetupTaskResponse(status="ok").model_dump()})
+
+        await websocket.close()
 
 
 @app.post("/evaluate-response/")
@@ -216,13 +248,8 @@ def evaluate_response(_request: EvaluateResponseRequest):
     )
 
 
-@app.post("/evaluate-instance/", response_model_exclude_none=True)
-async def evaluate_instance(
-    request: EvaluateInstanceRequest,
-    x_api_key: str = Header(...),
-    x_api_url: str = Header(...),
-    x_target: str = Header(...),
-) -> EvaluationResult:
+@app.websocket("/ws/evaluate-instance")
+async def evaluate_instance(websocket: WebSocket):
     """
     Executes tests and grades the results for an instance.
 
@@ -245,25 +272,41 @@ async def evaluate_instance(
     - 500 Internal Server Error if the instance is not evaluated successfully
     """
 
+    await websocket.accept()
+
+    api_key = websocket.headers.get("x-api-key")
+    api_url = websocket.headers.get("x-api-url")
+    target = websocket.headers.get("x-target")
+
+    if not api_key or not api_url or not target:
+        await websocket.close(code=1008, reason="Missing required headers: x-api-key, x-api-url, x-target")
+        return
+
+    data = await websocket.receive_json()
+
+    request = EvaluateInstanceRequest(**data)
+
     logger.info(f"Evaluate instance endpoint request received: {request.model_dump_json(indent=4)}")
 
     # Theres only one task id we need to validate since we are evaluating a single instance
     validated_task_id = validate_task_ids([request.task_id])[0]
 
     daytona_config = DaytonaConfig(
-        api_key=x_api_key,
-        api_url=x_api_url,
-        target=x_target,
+        api_key=api_key,
+        api_url=api_url,
+        target=target,
     )
 
     async with AsyncDaytona(config=daytona_config) as daytona:
         sandbox = await daytona.get(request.instance_id)
 
-        test_output, prediction = await run_tests(sandbox, validated_task_id)
+        test_output, prediction = await run_tests(sandbox, validated_task_id, websocket)
 
         final_result: EvaluationResult = grade_test_output(test_output, validated_task_id, prediction)
 
-        return final_result
+        await websocket.send_json({"type": "result", "data": final_result.model_dump(exclude_none=True)})
+
+        await websocket.close()
 
 
 @app.post("/final-score/")
