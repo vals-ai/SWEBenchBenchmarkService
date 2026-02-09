@@ -1,0 +1,21 @@
+networks:
+  tracker-network:
+    name: tracker-network
+    external: true
+
+services:
+  swebench:
+    image: swebench.benchmark.service:latest
+    container_name: swebench.benchmark.service
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000"
+    privileged: true
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/logs
+    networks:
+      - tracker-network
