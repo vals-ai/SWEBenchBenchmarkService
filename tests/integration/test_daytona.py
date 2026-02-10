@@ -50,6 +50,36 @@ async def test_client() -> BenchmarkServiceTestClient:
 
 
 class TestDaytona:
+    async def _setup_task(
+        self,
+        sandbox: AsyncSandbox,
+        task_context: TaskContext,
+        test_client: BenchmarkServiceTestClient,
+    ) -> dict[str, Any]:
+        async for setup_result in test_client.request_setup_task(task_id=task_context.task_id, instance_id=sandbox.id):
+            if isinstance(setup_result, dict):
+                return setup_result
+
+            logger.info(f"Setup message: {setup_result}")
+
+        raise Exception("No setup result received")
+
+    async def _evaluate_instance(
+        self,
+        sandbox: AsyncSandbox,
+        task_context: TaskContext,
+        test_client: BenchmarkServiceTestClient,
+    ) -> dict[str, Any]:
+        async for evaluation_result in test_client.request_evaluate_instance(
+            task_id=task_context.task_id, instance_id=sandbox.id
+        ):
+            if isinstance(evaluation_result, dict):
+                return evaluation_result
+
+            logger.info(f"Evaluation message: {evaluation_result}")
+
+        raise Exception("No evaluation result received")
+
     async def _insert_patch_and_evaluate(
         self,
         sandbox: AsyncSandbox,
@@ -59,7 +89,7 @@ class TestDaytona:
     ) -> dict[str, Any]:
         # Use the additional_setup flag
         if request_setup:
-            await test_client.request_setup_task(task_id=task_context.task_id, instance_id=sandbox.id)
+            await self._setup_task(sandbox, task_context, test_client)
 
         if not task_context.patch:
             raise Exception(f"Patch not found for task {task_context.task_id}")
@@ -77,12 +107,7 @@ class TestDaytona:
             raise Exception(f"Error applying solution patch for task {task_context.task_id}")
 
         # Request for evaluation
-        evaluation_result = await test_client.request_evaluate_instance(
-            task_id=task_context.task_id,
-            instance_id=sandbox.id,
-        )
-
-        return evaluation_result
+        return await self._evaluate_instance(sandbox, task_context, test_client)
 
     @pytest.mark.experimental
     async def test_build_all_sandboxes(self, daytona: AsyncDaytona) -> None:
@@ -123,7 +148,7 @@ class TestDaytona:
 
         async with create_sandbox(daytona, task_id, task_context.docker_image) as sandbox:
             # Setup environment on base commit
-            await test_client.request_setup_task(task_id=task_id, instance_id=sandbox.id)
+            await self._setup_task(sandbox, task_context, test_client)
 
             # Verify we're on the correct commit
             verify_result = await sandbox.process.exec(
