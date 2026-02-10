@@ -8,8 +8,7 @@ help:
 	@echo "Available commands:"
 	@echo "  install - Initialize the .venv and download dependencies"
 	@echo "  setup - Download dataset"
-	@echo "  benchmark-service - Build and run the benchmark service"
-	@echo "  benchmark-service-local - Build and run on tracker-network (port 8001)"
+	@echo "  benchmark-service - Build and run on tracker-network (port 8001)"
 	@echo "  test-unit - Run unit tests"
 	@echo "  test-integration - Run integration tests"
 
@@ -21,10 +20,6 @@ setup:
 	uv run python -m src.setup
 
 benchmark-service:
-	docker build -t $(IMAGE_NAME):$(IMAGE_TAG) -f Dockerfile .
-	docker run -d --name $(IMAGE_NAME) -p 8000:8000 --privileged $(IMAGE_NAME):$(IMAGE_TAG)
-
-benchmark-service-local:
 	docker compose down --volumes
 	docker compose up --build
 
