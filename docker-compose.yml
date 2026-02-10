@@ -1,7 +1,6 @@
 networks:
   tracker-network:
     name: tracker-network
-    external: true
 
 services:
   swebench:
@@ -13,8 +12,6 @@ services:
     ports:
       - "8001:8000"
     privileged: true
-    env_file:
-      - .env
     volumes:
       - ./logs:/logs
     networks:
