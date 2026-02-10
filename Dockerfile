@@ -23,4 +23,4 @@ RUN PYTHONPATH=/app /app/.venv/bin/python src/setup/__main__.py
 
 EXPOSE 8000
 
-CMD ["uv", "run", "fastapi", "run", "main.py", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--ws-ping-interval", "30", "--ws-ping-timeout", "10"]

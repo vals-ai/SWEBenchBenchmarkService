@@ -7,7 +7,7 @@ requires-python = "==3.12.*"
 
 dependencies = [
     "datasets>=4.4.2",
-    "daytona>=0.134.0",
+    "daytona>=0.140.0",
     "fastapi[standard]>=0.127.1",
     "httpx>=0.28.1",
     "swebench==4.1.0",

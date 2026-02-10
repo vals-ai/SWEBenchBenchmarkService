@@ -3,7 +3,6 @@ import json
 import uuid
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, AsyncGenerator, cast
 
@@ -26,16 +25,22 @@ logger = get_logger(__name__)
 
 _DISK_PATH: Path = Path("/tmp/swe-bench-verified")
 
+_DATASET_CACHE: dict[str, dict[str, Any]] | None = None
 
-@lru_cache(maxsize=None)
+
 def load_dataset_from_disk() -> dict[str, dict[str, Any]]:
     """Load the dataset from disk and return a mapping of instance_id to row data.
 
     Returns:
         dict[str, dict[str, Any]]: A dictionary mapping instance_id to the corresponding dataset row
     """
-    dataset = load_from_disk(_DISK_PATH)  # type: ignore
-    return {row["instance_id"]: dict(row) for row in dataset}  # type: ignore
+    global _DATASET_CACHE
+
+    if _DATASET_CACHE is None:
+        dataset = load_from_disk(_DISK_PATH)  # type: ignore
+        _DATASET_CACHE = {row["instance_id"]: dict(row) for row in dataset}  # type: ignore
+
+    return _DATASET_CACHE  # type: ignore
 
 
 def validate_task_ids(provided_task_ids: list[str]) -> list[str]:
