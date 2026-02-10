@@ -25,6 +25,7 @@ benchmark-service:
 	docker run -d --name $(IMAGE_NAME) -p 8000:8000 --privileged $(IMAGE_NAME):$(IMAGE_TAG)
 
 benchmark-service-local:
+	docker compose down --volumes
 	docker compose up --build
 
 test-unit:
