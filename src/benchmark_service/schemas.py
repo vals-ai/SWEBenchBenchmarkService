@@ -1,6 +1,6 @@
 """Request and response models for the benchmark service API."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -124,3 +124,28 @@ class HealthCheckResponse(BaseModel):
     """Simple health check response."""
 
     status: str = Field(description="Status of the service ('ok' if running)")
+
+
+class StreamMessageChunk(BaseModel):
+    """Streaming chunk for log messages and progress updates."""
+
+    type: Literal["message"] = Field(description="Chunk type identifier")
+    data: str = Field(description="Log message or progress update")
+
+
+class StreamResultChunk(BaseModel):
+    """Streaming chunk for final results."""
+
+    type: Literal["result"] = Field(description="Chunk type identifier")
+    data: Any = Field(description="Final result data (benchmark-specific structure)")
+
+
+class StreamErrorChunk(BaseModel):
+    """Streaming chunk for error messages."""
+
+    type: Literal["error"] = Field(description="Chunk type identifier")
+    data: str = Field(description="Error message")
+
+
+# Union type for all streaming chunks
+StreamChunk = StreamMessageChunk | StreamResultChunk | StreamErrorChunk

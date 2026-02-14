@@ -95,7 +95,55 @@ class MyBenchmark(BenchmarkService):
             "score": 1.0 if is_correct else 0.0,
         }
 
-    # Implement other abstract methods as needed...
+    async def setup_task(self, task_id: str, sandbox: AsyncSandbox):
+        """Setup task in sandbox environment."""
+        from benchmark_service import StreamMessageChunk, StreamResultChunk
+
+        # The sandbox is already connected - just use it!
+        # Upload files, execute commands, etc.
+
+        yield StreamMessageChunk(type="message", data="Starting setup...")
+
+        # Example: upload a setup script
+        # await sandbox.fs.upload_file(script.encode(), "/setup.sh")
+
+        # Example: execute commands
+        # result = await sandbox.process.exec("bash /setup.sh")
+        # yield StreamMessageChunk(type="message", data=result.result)
+
+        yield StreamResultChunk(type="result", data={"status": "ok"})
+
+    async def evaluate_instance(self, task_id: str, sandbox: AsyncSandbox):
+        """Evaluate solution in sandbox environment."""
+        from benchmark_service import StreamMessageChunk, StreamResultChunk
+
+        # Run tests in the sandbox
+        yield StreamMessageChunk(type="message", data="Running tests...")
+
+        # Example: execute tests
+        # result = await sandbox.process.exec("pytest tests/")
+        # yield StreamMessageChunk(type="message", data=result.result)
+
+        # Yield final evaluation result
+        yield StreamResultChunk(type="result", data={"resolved": True, "score": 1.0})
+
+    def calculate_final_score(self, evaluation_results: dict[str, Any]) -> tuple[float, dict[str, Any]]:
+        """Calculate aggregate score from all evaluations."""
+        total = len(evaluation_results)
+        resolved = sum(1 for r in evaluation_results.values() if r.get("resolved", False))
+        score = (resolved / total * 100) if total > 0 else 0.0
+
+        return score, {"total": total, "resolved": resolved}
+```
+
+**Streaming Chunk Types:**
+
+When yielding from `setup_task` or `evaluate_instance`, use these Pydantic models:
+- `StreamMessageChunk(type="message", data="...")` - Log messages and progress updates
+- `StreamResultChunk(type="result", data={...})` - Final result (any structure)
+- `StreamErrorChunk(type="error", data="...")` - Error messages
+
+These are unified as the `StreamChunk` union type for type safety.
 ```
 
 ### 2. Update `main.py`

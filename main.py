@@ -6,18 +6,24 @@ class and passing your implementation to the create_app() function to create
 the FastAPI server.
 """
 
+from collections.abc import AsyncGenerator
 from typing import Any
 
-from fastapi import WebSocket
+from daytona import AsyncSandbox
 
 from benchmark_service import (
     BenchmarkService,
-    EvaluateInstanceRequest,
+    create_app,
+)
+
+from benchmark_service.schemas import (
     EvaluateResponseRequest,
     Resources,
     RetrieveTaskResponse,
-    SetupTaskRequest,
-    create_app,
+    StreamChunk,
+    StreamErrorChunk,
+    StreamMessageChunk,
+    StreamResultChunk,
 )
 
 
@@ -57,11 +63,11 @@ class MyBenchmark(BenchmarkService):
             resources=Resources(vcpu=2, memory=4, disk=10),
         )
 
-    async def setup_task(self, request: SetupTaskRequest, websocket: WebSocket) -> None:
+    async def setup_task(self, task_id: str, sandbox: AsyncSandbox) -> AsyncGenerator[StreamChunk, None]:
         """Setup task in sandbox (not needed for this example)."""
-        await websocket.send_json({"type": "message", "data": "No setup required for example benchmark"})
-        await websocket.send_json({"type": "result", "data": {"status": "ok"}})
-        await websocket.close()
+        yield StreamMessageChunk(type="message", data=f"Setting up task {task_id}...")
+        yield StreamMessageChunk(type="message", data="No setup required for example benchmark")
+        yield StreamResultChunk(type="result", data={"status": "ok"})
 
     def evaluate_response(self, request: EvaluateResponseRequest) -> Any:
         """Evaluate a text response."""
@@ -79,15 +85,13 @@ class MyBenchmark(BenchmarkService):
             "received": request.response.strip(),
         }
 
-    async def evaluate_instance(self, request: EvaluateInstanceRequest, websocket: WebSocket) -> None:
+    async def evaluate_instance(self, task_id: str, sandbox: AsyncSandbox) -> AsyncGenerator[StreamChunk, None]:
         """Evaluate in sandbox (not implemented for this example)."""
-        await websocket.send_json(
-            {
-                "type": "error",
-                "data": "Sandbox evaluation not implemented. Use /evaluate-response/ endpoint instead.",
-            }
+        yield StreamMessageChunk(type="message", data=f"Evaluating task {task_id}...")
+        yield StreamErrorChunk(
+            type="error",
+            data="Sandbox evaluation not implemented. Use /evaluate-response/ endpoint instead.",
         )
-        await websocket.close()
 
     def calculate_final_score(self, evaluation_results: dict[str, Any]) -> tuple[float, dict[str, Any]]:
         """Calculate final score across all evaluations."""

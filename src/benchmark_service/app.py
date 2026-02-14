@@ -8,6 +8,7 @@ Import create_app and pass your BenchmarkService implementation.
 import traceback
 from typing import Any
 
+from daytona import AsyncDaytona, DaytonaConfig
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 
 from benchmark_service.base import BenchmarkService
@@ -129,12 +130,11 @@ def create_app(benchmark_service: BenchmarkService) -> FastAPI:
         Body:
             {"task_id": "task_1", "instance_id": "instance_123"}
 
-        The implementation should:
-        1. Connect to sandbox service
-        2. Upload setup scripts/data
-        3. Execute setup commands
-        4. Stream output via WebSocket
-        5. Return success/failure status
+        The framework handles:
+        1. WebSocket connection management
+        2. Daytona client setup
+        3. Sandbox retrieval
+        4. Streaming yielded messages to client
         """
         await websocket.accept()
 
@@ -151,8 +151,17 @@ def create_app(benchmark_service: BenchmarkService) -> FastAPI:
         data = await websocket.receive_json()
         request = SetupTaskRequest(**data)
 
-        # Call benchmark service implementation
-        await benchmark_service.setup_task(request, websocket)
+        # Setup Daytona client and get sandbox
+        daytona_config = DaytonaConfig(api_key=api_key, api_url=api_url, target=target)
+
+        async with AsyncDaytona(config=daytona_config) as daytona:
+            sandbox = await daytona.get(request.instance_id)
+
+            # Call benchmark service implementation and stream results
+            async for message in benchmark_service.setup_task(request.task_id, sandbox):
+                await websocket.send_json(message)
+
+        await websocket.close()
 
     @app.post("/evaluate-response/")
     def evaluate_response(request: EvaluateResponseRequest) -> Any:
@@ -188,12 +197,11 @@ def create_app(benchmark_service: BenchmarkService) -> FastAPI:
         Body:
             {"task_id": "task_1", "instance_id": "instance_123"}
 
-        The implementation should:
-        1. Connect to sandbox service
-        2. Execute tests or evaluation scripts
-        3. Parse test output and grade results
-        4. Stream logs to client via WebSocket
-        5. Return EvaluationResult with detailed scores
+        The framework handles:
+        1. WebSocket connection management
+        2. Daytona client setup
+        3. Sandbox retrieval
+        4. Streaming yielded messages to client
         """
         await websocket.accept()
 
@@ -210,8 +218,17 @@ def create_app(benchmark_service: BenchmarkService) -> FastAPI:
         data = await websocket.receive_json()
         request = EvaluateInstanceRequest(**data)
 
-        # Call benchmark service implementation
-        await benchmark_service.evaluate_instance(request, websocket)
+        # Setup Daytona client and get sandbox
+        daytona_config = DaytonaConfig(api_key=api_key, api_url=api_url, target=target)
+
+        async with AsyncDaytona(config=daytona_config) as daytona:
+            sandbox = await daytona.get(request.instance_id)
+
+            # Call benchmark service implementation and stream results
+            async for message in benchmark_service.evaluate_instance(request.task_id, sandbox):
+                await websocket.send_json(message)
+
+        await websocket.close()
 
     @app.post("/final-score/")
     async def final_score(request: FinalScoreRequest) -> FinalScoreResponse:
