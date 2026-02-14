@@ -1,0 +1,36 @@
+[project]
+name = "benchmark-service-template"
+version = "0.1.0"
+description = "Template for creating benchmark services"
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = [
+    "fastapi[standard]>=0.127.1",
+]
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.38.0",
+    "ruff>=0.14.10",
+    "pytest>=8.0.0",
+    "httpx>=0.27.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.basedpyright]
+venvPath="."
+venv=".venv"
+typeCheckingMode = "strict"
+reportExplicitAny = false
+reportAny = false
+reportMissingTypeStubs = false
+enableTypeIgnoreComments = true
+exclude = [".*"]
