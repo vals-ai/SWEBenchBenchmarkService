@@ -18,6 +18,7 @@ from benchmark_service import (
 
 from benchmark_service.schemas import (
     EvaluateResponseRequest,
+    FinalScoreResult,
     Resources,
     RetrieveTaskResponse,
     StreamChunk,
@@ -93,7 +94,7 @@ class MyBenchmark(BenchmarkService):
             data="Sandbox evaluation not implemented. Use /evaluate-response/ endpoint instead.",
         )
 
-    def calculate_final_score(self, evaluation_results: dict[str, Any]) -> tuple[float, dict[str, Any]]:
+    def calculate_final_score(self, evaluation_results: dict[str, Any]) -> FinalScoreResult:
         """Calculate final score across all evaluations."""
         total = len(evaluation_results)
 
@@ -108,7 +109,7 @@ class MyBenchmark(BenchmarkService):
             "unresolved_tasks": total - resolved,
         }
 
-        return score, metadata
+        return FinalScoreResult(score=score, metadata=metadata)
 
 
 # Create the FastAPI app with your benchmark implementation

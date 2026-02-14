@@ -112,6 +112,13 @@ class FinalScoreRequest(BaseModel):
     evaluation_results: dict[str, Any] = Field(description="Mapping of task_id to benchmark-specific evaluation result")
 
 
+class FinalScoreResult(BaseModel):
+    """Result from calculate_final_score method."""
+
+    score: float = Field(description="Aggregate score (e.g., percentage of resolved tasks)")
+    metadata: dict[str, Any] = Field(description="Benchmark-specific metadata")
+
+
 class FinalScoreResponse(BaseModel):
     """Final aggregated score across all evaluated tasks."""
 

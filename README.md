@@ -127,13 +127,15 @@ class MyBenchmark(BenchmarkService):
         # Yield final evaluation result
         yield StreamResultChunk(type="result", data={"resolved": True, "score": 1.0})
 
-    def calculate_final_score(self, evaluation_results: dict[str, Any]) -> tuple[float, dict[str, Any]]:
+    def calculate_final_score(self, evaluation_results: dict[str, Any]) -> FinalScoreResult:
         """Calculate aggregate score from all evaluations."""
+        from benchmark_service.schemas import FinalScoreResult
+
         total = len(evaluation_results)
         resolved = sum(1 for r in evaluation_results.values() if r.get("resolved", False))
         score = (resolved / total * 100) if total > 0 else 0.0
 
-        return score, {"total": total, "resolved": resolved}
+        return FinalScoreResult(score=score, metadata={"total": total, "resolved": resolved})
 ```
 
 **Streaming Chunk Types:**

@@ -14,6 +14,7 @@ from daytona import AsyncSandbox
 
 from benchmark_service.schemas import (
     EvaluateResponseRequest,
+    FinalScoreResult,
     RetrieveTaskResponse,
     StreamChunk,
     TaskFilter,
@@ -177,7 +178,7 @@ class BenchmarkService(ABC):
         ...
 
     @abstractmethod
-    def calculate_final_score(self, evaluation_results: dict[str, Any]) -> tuple[float, dict[str, Any]]:
+    def calculate_final_score(self, evaluation_results: dict[str, Any]) -> FinalScoreResult:
         """
         Calculate final aggregate score from all evaluation results.
 
@@ -191,6 +192,6 @@ class BenchmarkService(ABC):
             evaluation_results: Dictionary mapping task_id to your evaluation result objects
 
         Returns:
-            Tuple of (final_score, metadata_dict)
+            FinalScoreResult with score and metadata
         """
         ...

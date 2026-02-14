@@ -253,12 +253,12 @@ def create_app(benchmark_service: BenchmarkService) -> FastAPI:
         validated_task_ids = benchmark_service.validate_task_ids(tasks_evaluated)
 
         # Calculate final score using benchmark service implementation
-        final_score_value, metadata = benchmark_service.calculate_final_score(request.evaluation_results)
+        result = benchmark_service.calculate_final_score(request.evaluation_results)
 
         return FinalScoreResponse(
             tasks_evaluated=validated_task_ids,
-            final_score=final_score_value,
-            metadata=metadata,
+            final_score=result.score,
+            metadata=result.metadata,
         )
 
     return app
