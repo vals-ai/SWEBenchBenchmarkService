@@ -51,7 +51,7 @@ wheels = [
 ]
 
 [[package]]
-name = "benchmark-service-skeleton"
+name = "benchmark-service-template"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

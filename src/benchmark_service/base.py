@@ -28,16 +28,29 @@ class BenchmarkService(ABC):
     The FastAPI endpoints are already implemented and will call these methods.
     """
 
+    def __init__(self):
+        """Initialize the benchmark service."""
+
+        self.tasks = self.load_dataset()
+
     @abstractmethod
+    def load_dataset(self) -> dict[str, Any]:
+        """
+        Load the complete benchmark dataset.
+
+        Implement dataset loading logic:
+        - Load all tasks from your benchmark source (files, database, etc.)
+        - Return a dictionary mapping task IDs to your benchmark-specific task objects
+        - The task objects can be any structure (dataclass, Pydantic model, dict, etc.)
+
+        Returns:
+            Dictionary mapping task IDs to benchmark-specific task objects
+        """
+        ...
+
     def filter_tasks(self, task_filter: TaskFilter) -> list[str]:
         """
         Filter tasks based on provided criteria.
-
-        Implement task filtering logic:
-        - Load your benchmark dataset
-        - Filter by task_ids if provided
-        - Apply slice if provided
-        - Return list of valid task IDs
 
         Args:
             task_filter: Filter criteria for selecting tasks
@@ -45,17 +58,20 @@ class BenchmarkService(ABC):
         Returns:
             List of task IDs that match the filter criteria
         """
-        ...
+        all_task_ids = list(self.tasks.keys())
 
-    @abstractmethod
+        if task_filter.task_ids:
+            return [tid for tid in task_filter.task_ids if tid in all_task_ids]
+
+        if task_filter.slice_str:
+            slice_obj = task_filter.parse_slice()
+            return all_task_ids[slice_obj]
+
+        return all_task_ids
+
     def validate_task_ids(self, task_ids: list[str]) -> list[str]:
         """
         Validate that task IDs exist in your benchmark dataset.
-
-        Implement validation logic:
-        - Check if task_ids exist in your dataset
-        - Raise ValueError for invalid task IDs
-        - Return the validated task IDs
 
         Args:
             task_ids: List of task IDs to validate
@@ -66,7 +82,10 @@ class BenchmarkService(ABC):
         Raises:
             ValueError: If any task ID is invalid
         """
-        ...
+        for task_id in task_ids:
+            if task_id not in self.tasks:
+                raise ValueError(f"Task ID not found: {task_id}")
+        return task_ids
 
     @abstractmethod
     def retrieve_task(self, task_id: str, skip_validation: bool = False) -> RetrieveTaskResponse:

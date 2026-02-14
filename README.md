@@ -21,9 +21,9 @@ The API will be available at `http://localhost:8000`.
 
 This skeleton provides:
 
-- **Complete FastAPI implementation** - All endpoints are fully implemented in `src/app.py`
-- **BenchmarkService base class** - Abstract class with methods to implement (`src/benchmark_service.py`)
-- **Pydantic schemas** - Request/response validation (`src/schemas.py`)
+- **Complete FastAPI implementation** - All endpoints are fully implemented in `src/benchmark_service/app.py`
+- **BenchmarkService base class** - Abstract class with common implementations (`src/benchmark_service/base.py`)
+- **Pydantic schemas** - Request/response validation (`src/benchmark_service/schemas.py`)
 - **Example implementation** - Working example in `main.py`
 - **Dockerfile & Makefile** - Ready for containerization and development
 
@@ -31,12 +31,13 @@ This skeleton provides:
 
 ```
 benchmark-service-skeleton/
-├── main.py                      # Entry point (update TODO here!)
-├── benchmark_service/           # Framework package
-│   ├── __init__.py              # Package exports
-│   ├── app.py                   # FastAPI factory (fully implemented)
-│   ├── base.py                  # BenchmarkService ABC
-│   └── schemas.py               # Pydantic models
+├── main.py                      # Entry point - implement your benchmark here!
+├── src/
+│   └── benchmark_service/       # Framework package
+│       ├── __init__.py          # Package exports
+│       ├── app.py               # FastAPI factory (fully implemented)
+│       ├── base.py              # BenchmarkService ABC with common methods
+│       └── schemas.py           # Pydantic models
 ├── pyproject.toml               # Python dependencies
 ├── Dockerfile                   # Container configuration
 ├── Makefile                     # Development commands
@@ -47,29 +48,33 @@ benchmark-service-skeleton/
 
 ### 1. Create your benchmark class
 
-Implement the `BenchmarkService` abstract class. 
+Implement the `BenchmarkService` abstract class
 
 ```python
+from typing import Any
 from benchmark_service import BenchmarkService, create_app, Resources, RetrieveTaskResponse
 
 class MyBenchmark(BenchmarkService):
-    def __init__(self):
-        # Load your benchmark dataset
-        self.tasks = load_your_dataset()
-
-    def filter_tasks(self, task_filter: TaskFilter) -> list[str]:
-        # Filter tasks by IDs or slice
-        return list(self.tasks.keys())
-
-    def validate_task_ids(self, task_ids: list[str]) -> list[str]:
-        # Validate task IDs exist
-        for tid in task_ids:
-            if tid not in self.tasks:
-                raise ValueError(f"Invalid task: {tid}")
-        return task_ids
+    def load_dataset(self) -> dict[str, Any]:
+        """Load and return your benchmark dataset as a dict mapping task_id to task data."""
+        return {
+            "task-1": {
+                "docker_image": "python:3.12-slim",
+                "problem": "Write a function that returns 'Hello, World!'",
+                "answer": "Hello, World!",
+            },
+            "task-2": {
+                "docker_image": "python:3.12-slim",
+                "problem": "What is 2 + 2?",
+                "answer": "4",
+            },
+        }
 
     def retrieve_task(self, task_id: str, skip_validation: bool = False):
-        # Return task metadata
+        """Return task metadata."""
+        if not skip_validation:
+            self.validate_task_ids([task_id])
+
         task = self.tasks[task_id]
         return RetrieveTaskResponse(
             docker_image=task["docker_image"],
@@ -80,11 +85,17 @@ class MyBenchmark(BenchmarkService):
         )
 
     def evaluate_response(self, request: EvaluateResponseRequest):
-        # Evaluate a text response
-        # Return EvaluationResult with your scoring
-        return EvaluationResult()
+        """Evaluate a text response."""
+        task = self.tasks[request.task_id]
+        is_correct = request.response.strip() == task["answer"]
 
-    # Implement other methods as needed...
+        return {
+            "task_id": request.task_id,
+            "resolved": is_correct,
+            "score": 1.0 if is_correct else 0.0,
+        }
+
+    # Implement other abstract methods as needed...
 ```
 
 ### 2. Update `main.py`
@@ -156,17 +167,26 @@ curl -X POST http://localhost:8000/final-score/ \
 
 ## BenchmarkService Methods
 
-Implement these methods in your class:
+### Methods to Implement
 
 | Method | Description | Required |
 |--------|-------------|----------|
-| `filter_tasks()` | Filter tasks by IDs or slice | Yes |
-| `validate_task_ids()` | Validate task IDs exist | Yes |
+| `load_dataset()` | Load and return task dataset as dict | Yes |
 | `retrieve_task()` | Get task metadata | Yes |
 | `evaluate_response()` | Evaluate text response | For text-based benchmarks |
 | `setup_task()` | Setup task in sandbox | For execution benchmarks |
 | `evaluate_instance()` | Evaluate in sandbox | For execution benchmarks |
 | `calculate_final_score()` | Aggregate results | Yes |
+
+### Methods Provided by Base Class
+
+These are already implemented - you don't need to override them:
+
+| Method | Description |
+|--------|-------------|
+| `__init__()` | Constructor that calls `load_dataset()` and stores tasks |
+| `filter_tasks()` | Filter tasks by IDs or slice |
+| `validate_task_ids()` | Validate task IDs exist |
 
 ## Docker
 

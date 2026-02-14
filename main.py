@@ -17,7 +17,6 @@ from benchmark_service import (
     Resources,
     RetrieveTaskResponse,
     SetupTaskRequest,
-    TaskFilter,
     create_app,
 )
 
@@ -30,9 +29,9 @@ class MyBenchmark(BenchmarkService):
     Modify it to load your own dataset and implement your evaluation logic.
     """
 
-    def __init__(self):
-        # Load your benchmark dataset here
-        self.tasks = {
+    def load_dataset(self) -> dict[str, Any]:
+        """Load the benchmark dataset."""
+        return {
             "example-task-1": {
                 "problem": "Write a function that returns 'Hello, World!'",
                 "answer": "Hello, World!",
@@ -42,26 +41,6 @@ class MyBenchmark(BenchmarkService):
                 "answer": "4",
             },
         }
-
-    def filter_tasks(self, task_filter: TaskFilter) -> list[str]:
-        """Filter tasks based on criteria."""
-        all_task_ids = list(self.tasks.keys())
-
-        if task_filter.task_ids:
-            return [tid for tid in task_filter.task_ids if tid in all_task_ids]
-
-        if task_filter.slice_str:
-            slice_obj = task_filter.parse_slice()
-            return all_task_ids[slice_obj]
-
-        return all_task_ids
-
-    def validate_task_ids(self, task_ids: list[str]) -> list[str]:
-        """Validate that task IDs exist."""
-        for task_id in task_ids:
-            if task_id not in self.tasks:
-                raise ValueError(f"Task ID not found: {task_id}")
-        return task_ids
 
     def retrieve_task(self, task_id: str, skip_validation: bool = False) -> RetrieveTaskResponse:
         """Retrieve task metadata."""
