@@ -159,7 +159,7 @@ def create_app(benchmark_service: BenchmarkService) -> FastAPI:
 
             # Call benchmark service implementation and stream results
             async for message in benchmark_service.setup_task(request.task_id, sandbox):
-                await websocket.send_json(message)
+                await websocket.send_json(message.model_dump())
 
         await websocket.close()
 
@@ -226,7 +226,7 @@ def create_app(benchmark_service: BenchmarkService) -> FastAPI:
 
             # Call benchmark service implementation and stream results
             async for message in benchmark_service.evaluate_instance(request.task_id, sandbox):
-                await websocket.send_json(message)
+                await websocket.send_json(message.model_dump())
 
         await websocket.close()
 
