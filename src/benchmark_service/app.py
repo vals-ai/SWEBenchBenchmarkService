@@ -36,11 +36,7 @@ def create_app(benchmark_service: BenchmarkService) -> FastAPI:
     Returns:
         Configured FastAPI application ready to run
     """
-    app = FastAPI(
-        title="Benchmark Service",
-        description="API for running and evaluating benchmark tasks",
-        version="0.1.0",
-    )
+    app = FastAPI(title=benchmark_service.__class__.__name__)
 
     @app.exception_handler(Exception)
     async def exception_handler(_request: Request, exc: Exception):

@@ -45,7 +45,7 @@ class BenchmarkService(ABC):
         Returns:
             List of task IDs that match the filter criteria
         """
-        pass
+        ...
 
     @abstractmethod
     def validate_task_ids(self, task_ids: list[str]) -> list[str]:
@@ -66,7 +66,7 @@ class BenchmarkService(ABC):
         Raises:
             ValueError: If any task ID is invalid
         """
-        pass
+        ...
 
     @abstractmethod
     def retrieve_task(self, task_id: str, skip_validation: bool = False) -> RetrieveTaskResponse:
@@ -85,7 +85,7 @@ class BenchmarkService(ABC):
         Returns:
             RetrieveTaskResponse with task metadata
         """
-        pass
+        ...
 
     @abstractmethod
     async def setup_task(self, request: SetupTaskRequest, websocket: WebSocket) -> None:
@@ -107,7 +107,7 @@ class BenchmarkService(ABC):
             request: Setup request containing task_id and instance_id
             websocket: WebSocket connection for streaming updates
         """
-        pass
+        ...
 
     @abstractmethod
     def evaluate_response(self, request: EvaluateResponseRequest) -> Any:
@@ -129,7 +129,7 @@ class BenchmarkService(ABC):
         Returns:
             Your benchmark-specific evaluation result (dict, Pydantic model, etc.)
         """
-        pass
+        ...
 
     @abstractmethod
     async def evaluate_instance(self, request: EvaluateInstanceRequest, websocket: WebSocket) -> None:
@@ -151,7 +151,7 @@ class BenchmarkService(ABC):
             request: Evaluation request containing task_id and instance_id
             websocket: WebSocket connection for streaming updates
         """
-        pass
+        ...
 
     @abstractmethod
     def calculate_final_score(self, evaluation_results: dict[str, Any]) -> tuple[float, dict[str, Any]]:
@@ -170,4 +170,4 @@ class BenchmarkService(ABC):
         Returns:
             Tuple of (final_score, metadata_dict)
         """
-        pass
+        ...
