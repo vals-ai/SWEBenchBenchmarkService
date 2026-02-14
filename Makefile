@@ -17,7 +17,7 @@ install: ## Install dependencies
 	uv sync --dev
 
 dev: venv_check  ## Start the development server
-	uv run fastapi dev main.py
+	uv run fastapi dev main.py --port 0
 
 style: ## Format code with ruff
 	uv run ruff check --fix .
