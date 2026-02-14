@@ -183,7 +183,8 @@ make docker-run
 make help            # Show this help message
 make install         # Install dependencies
 make dev             # Start the development server
-make style           # Format code with ruff
+make lint            # Check style with ruff
+make format          # Format code with ruff
 make typecheck       # Type check code with basedpyright
 make test            # Run tests
 make docker-build    # Build Docker image

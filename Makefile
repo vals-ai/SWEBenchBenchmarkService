@@ -19,7 +19,10 @@ install: ## Install dependencies
 dev: venv_check  ## Start the development server
 	uv run fastapi dev main.py --port 0
 
-style: ## Format code with ruff
+lint: ## CHeck style with ruff
+	uv run ruff check .
+
+format: ## Format code with ruff
 	uv run ruff check --fix .
 
 typecheck: ## Type check code with basedpyright
