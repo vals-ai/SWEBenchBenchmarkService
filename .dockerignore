@@ -1,8 +1,0 @@
-cdk.out
-.vscode
-.venv
-__pycache__
-.pytest_cache
-tests/
-Makefile
-.env
