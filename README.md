@@ -1,4 +1,4 @@
-# Benchmark Service Skeleton
+# Benchmark Service Template
 
 A template repository for creating benchmark services with FastAPI. Fork this repository and implement the `BenchmarkService` class to create your own service.
 

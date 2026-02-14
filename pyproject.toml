@@ -1,7 +1,7 @@
 [project]
-name = "benchmark-service-skeleton"
+name = "benchmark-service-template"
 version = "0.1.0"
-description = "Skeleton template for creating benchmark services"
+description = "Template for creating benchmark services"
 readme = "README.md"
 requires-python = ">=3.12"
 
