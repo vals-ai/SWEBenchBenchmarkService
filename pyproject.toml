@@ -46,3 +46,14 @@ reportAny = false
 reportMissingTypeStubs = false
 enableTypeIgnoreComments = true
 exclude = [".*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+markers = [
+    "experimental: marks tests as experimental (deselect with '-m \"not experimental\"')"
+]
+addopts = "-v -m 'not experimental'"

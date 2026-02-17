@@ -225,17 +225,41 @@ The evaluation follows SWE-bench's official grading methodology:
 ### Available Commands
 
 ```bash
-make help          # Show available commands
-make install       # Install dependencies
-make setup         # Download SWE-bench dataset
-make dev           # Start development server
-make lint          # Check code style
-make format        # Format code
-make typecheck     # Type check with basedpyright
-make test          # Run tests
-make docker-build  # Build Docker image
-make docker-run    # Run Docker container
+make help               # Show available commands
+make install            # Install dependencies
+make setup              # Download SWE-bench dataset
+make dev                # Start development server
+make lint               # Check code style
+make format             # Format code
+make typecheck          # Type check with basedpyright
+make test               # Run tests
+make test-experimental  # Run experimental tests (slow)
+make docker-build       # Build Docker image
+make docker-run         # Run Docker container
 ```
+
+### Testing
+
+The project includes comprehensive tests covering unit and integration tests:
+
+```bash
+# Run all tests (excluding experimental tests)
+make test
+
+# Run integration tests (requires Daytona credentials)
+export DAYTONA_API_KEY="your-key"
+export DAYTONA_API_URL="your-url"
+export DAYTONA_TARGET="your-target"
+make test
+
+# Run experimental tests (slow, tests all 500 images)
+make test-experimental
+```
+
+**Test Structure:**
+- `tests/unit/test_registry.py` - Dataset validation, setup script verification
+- `tests/unit/test_endpoints.py` - FastAPI endpoint tests
+- `tests/integration/test_end_to_end.py` - Full workflow tests with Daytona sandboxes
 
 ### Project Structure
 
@@ -249,6 +273,9 @@ make docker-run    # Run Docker container
 │   ├── dataset.py          # Dataset loading
 │   └── test_spec.py        # Test spec generation
 ├── setup.sh                # Environment setup script
+├── tests/                  # Test suite
+│   ├── unit/               # Unit tests
+│   └── integration/        # Integration tests
 ├── src/
 │   └── benchmark_service/  # Framework (template provided)
 ├── pyproject.toml
