@@ -21,5 +21,8 @@ jobs:
       - name: Install dependencies
         run: make install
 
+      - name: Load dataset
+        run: make setup
+
       - name: Run tests
         run: make test
