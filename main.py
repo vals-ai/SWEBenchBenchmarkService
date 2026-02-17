@@ -4,6 +4,8 @@ SWE-bench Benchmark Service.
 This service implements the SWE-bench benchmark using the benchmark service template framework.
 """
 
+import asyncio
+import logging
 import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -31,12 +33,14 @@ from swebench_utils import (
     load_dataset_from_disk,
 )
 
+logger = logging.getLogger(__name__)
+
 
 async def stream_command(
-    sandbox: AsyncSandbox, command: str, cwd: str = "/testbed", ignore_error: bool = False
+    sandbox: AsyncSandbox, command: str, cwd: str, ignore_error: bool = False
 ) -> AsyncGenerator[str, None]:
     """
-    Execute a command in a sandbox and stream output line by line.
+    Execute a command in a sandbox and stream output line by line in real-time.
 
     Args:
         sandbox: The sandbox instance
@@ -45,15 +49,13 @@ async def stream_command(
         ignore_error: Whether to ignore non-zero exit codes
 
     Yields:
-        Output lines from the command
+        Output lines from the command as they are produced
     """
     session_id = f"{sandbox.id}-{str(uuid.uuid4())}"
 
     try:
-        # Create session
         await sandbox.process.create_session(session_id)
 
-        # Execute command asynchronously
         session_exec_resp = await sandbox.process.execute_session_command(
             session_id, SessionExecuteRequest(command=f"cd {cwd} && {command}", run_async=True)
         )
@@ -62,26 +64,36 @@ async def stream_command(
         if not cmd_id:
             raise ValueError(f"Failed to execute command in session {session_id}")
 
-        # Collect output lines
-        output_lines: list[str] = []
+        output_queue: asyncio.Queue[str] = asyncio.Queue()
 
+        # Queue lines as they arrive
         def on_output(text: str) -> None:
             if text.strip():
-                output_lines.append(text)
+                output_queue.put_nowait(text)
 
-        # Stream logs
-        await sandbox.process.get_session_command_logs_async(
-            session_id=session_id,
-            command_id=cmd_id,
-            on_stdout=on_output,
-            on_stderr=on_output,
+        # Start command with streaming logs
+        log_task = asyncio.create_task(
+            sandbox.process.get_session_command_logs_async(
+                session_id=session_id,
+                command_id=cmd_id,
+                on_stdout=on_output,
+                on_stderr=on_output,
+            )
         )
 
-        # Yield collected lines
-        for line in output_lines:
-            yield line
+        # Yield lines as they arrive in queue
+        while not log_task.done():
+            try:
+                line = await asyncio.wait_for(output_queue.get(), timeout=0.1)
+                yield line
+            except asyncio.TimeoutError:
+                # Keep polling on timeout error
+                continue
 
-        # Check exit code
+        # Drain queue after command completes
+        while not output_queue.empty():
+            yield output_queue.get_nowait()
+
         cmd = await sandbox.process.get_session_command(session_id, cmd_id)
         if cmd.exit_code != 0 and not ignore_error:
             raise ValueError(f"Command failed with exit code {cmd.exit_code}")
@@ -90,7 +102,8 @@ async def stream_command(
         try:
             await sandbox.process.delete_session(session_id)
         except Exception:
-            # Session cleanup can fail if sandbox is being terminated
+            # NOTE: If we kill the sandbox this sometimes errors
+            logger.error(f"Caught failure to delete session `{session_id}`")
             pass
 
 
