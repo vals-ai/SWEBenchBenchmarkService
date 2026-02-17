@@ -62,7 +62,7 @@ class BenchmarkService(ABC):
         all_task_ids = list(self.tasks.keys())
 
         if task_filter.task_ids:
-            return [tid for tid in task_filter.task_ids if tid in all_task_ids]
+            return self.validate_task_ids(task_filter.task_ids)
 
         if task_filter.slice_str:
             slice_obj = task_filter.parse_slice()
