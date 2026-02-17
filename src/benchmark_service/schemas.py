@@ -1,6 +1,6 @@
 """Request and response models for the benchmark service API."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -112,6 +112,13 @@ class FinalScoreRequest(BaseModel):
     evaluation_results: dict[str, Any] = Field(description="Mapping of task_id to benchmark-specific evaluation result")
 
 
+class FinalScoreResult(BaseModel):
+    """Result from calculate_final_score method."""
+
+    score: float = Field(description="Aggregate score (e.g., percentage of resolved tasks)")
+    metadata: dict[str, Any] = Field(description="Benchmark-specific metadata")
+
+
 class FinalScoreResponse(BaseModel):
     """Final aggregated score across all evaluated tasks."""
 
@@ -124,3 +131,28 @@ class HealthCheckResponse(BaseModel):
     """Simple health check response."""
 
     status: str = Field(description="Status of the service ('ok' if running)")
+
+
+class StreamMessageChunk(BaseModel):
+    """Streaming chunk for log messages and progress updates."""
+
+    type: Literal["message"] = Field(description="Chunk type identifier")
+    data: str = Field(description="Log message or progress update")
+
+
+class StreamResultChunk(BaseModel):
+    """Streaming chunk for final results."""
+
+    type: Literal["result"] = Field(description="Chunk type identifier")
+    data: Any = Field(description="Final result data (benchmark-specific structure)")
+
+
+class StreamErrorChunk(BaseModel):
+    """Streaming chunk for error messages."""
+
+    type: Literal["error"] = Field(description="Chunk type identifier")
+    data: str = Field(description="Error message")
+
+
+# Union type for all streaming chunks
+StreamChunk = StreamMessageChunk | StreamResultChunk | StreamErrorChunk
