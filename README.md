@@ -1,270 +1,271 @@
-# Benchmark Service Template
+# SWE-bench Benchmark Service
 
-A template repository for creating benchmark services with FastAPI. Fork this repository and implement the `BenchmarkService` class to create your own service.
+A FastAPI-based service for evaluating software engineering agents on the SWE-bench benchmark. This service provides standardized endpoints for task retrieval, environment setup, and test-based evaluation of code changes.
+
+## Overview
+
+SWE-bench is a benchmark for evaluating AI agents on real-world software engineering tasks. This service implements the **SWE-bench_Verified** dataset, which contains 500 carefully verified GitHub issues from popular Python repositories.
+
+Each task requires:
+1. Understanding a GitHub issue description
+2. Making appropriate code changes to fix the issue
+3. Passing the associated test suite
+
+**Paper:** [SWE-bench: Can Language Models Resolve Real-World GitHub Issues?](https://arxiv.org/abs/2310.06770)
+**Repository:** [princeton-nlp/SWE-bench](https://github.com/princeton-nlp/SWE-bench)
 
 ## Quick Start
 
-```bash
-# Install dependencies
-make install
+### Prerequisites
 
-# Run the example service locally
-make dev
+- Python 3.12+
+- [uv](https://github.com/astral-sh/uv) package manager
+- Docker (for containerized deployment)
 
-# Run the example service in Docker
-make docker-run
-```
+### Installation
 
-The API will be available at `http://localhost:8000`.
+1. **Install dependencies:**
+   ```bash
+   make install
+   ```
 
-## What's Included
+2. **Download the SWE-bench_Verified dataset** (required before running the service):
+   ```bash
+   make setup
+   ```
 
-This skeleton provides:
+   This downloads ~500 task instances to `/tmp/swe-bench-verified/` (approximately 100MB).
 
-- **Complete FastAPI implementation** - All endpoints are fully implemented in `src/benchmark_service/app.py`
-- **BenchmarkService base class** - Abstract class with common implementations (`src/benchmark_service/base.py`)
-- **Pydantic schemas** - Request/response validation (`src/benchmark_service/schemas.py`)
-- **Example implementation** - Working example in `main.py`
-- **Dockerfile & Makefile** - Ready for containerization and development
+3. **Run the development server:**
+   ```bash
+   make dev
+   ```
 
-## Architecture
+The service will be available at `http://localhost:8000`. View API documentation at `http://localhost:8000/docs`.
 
-```
-benchmark-service-skeleton/
-├── main.py                      # Entry point - implement your benchmark here!
-├── src/
-│   └── benchmark_service/       # Framework package
-│       ├── __init__.py          # Package exports
-│       ├── app.py               # FastAPI factory (fully implemented)
-│       ├── base.py              # BenchmarkService ABC with common methods
-│       └── schemas.py           # Pydantic models
-├── pyproject.toml               # Python dependencies
-├── Dockerfile                   # Container configuration
-├── Makefile                     # Development commands
-└── README.md                    # This file
-```
+### Docker Deployment
 
-## How to Create Your Benchmark
-
-### 1. Create your benchmark class
-
-Implement the `BenchmarkService` abstract class
-
-```python
-from typing import Any
-from benchmark_service import BenchmarkService, create_app, Resources, RetrieveTaskResponse
-
-class MyBenchmark(BenchmarkService):
-    def load_dataset(self) -> dict[str, Any]:
-        """Load and return your benchmark dataset as a dict mapping task_id to task data."""
-        return {
-            "task-1": {
-                "docker_image": "python:3.12-slim",
-                "problem": "Write a function that returns 'Hello, World!'",
-                "answer": "Hello, World!",
-            },
-            "task-2": {
-                "docker_image": "python:3.12-slim",
-                "problem": "What is 2 + 2?",
-                "answer": "4",
-            },
-        }
-
-    def retrieve_task(self, task_id: str, skip_validation: bool = False):
-        """Return task metadata."""
-        if not skip_validation:
-            self.validate_task_ids([task_id])
-
-        task = self.tasks[task_id]
-        return RetrieveTaskResponse(
-            docker_image=task["docker_image"],
-            problem_statement=task["problem"],
-            request_setup=False,
-            cwd="/workspace",
-            resources=Resources(vcpu=2, memory=4, disk=10)
-        )
-
-    def evaluate_response(self, request: EvaluateResponseRequest):
-        """Evaluate a text response."""
-        task = self.tasks[request.task_id]
-        is_correct = request.response.strip() == task["answer"]
-
-        return {
-            "task_id": request.task_id,
-            "resolved": is_correct,
-            "score": 1.0 if is_correct else 0.0,
-        }
-
-    async def setup_task(self, task_id: str, sandbox: AsyncSandbox):
-        """Setup task in sandbox environment."""
-        from benchmark_service import StreamMessageChunk, StreamResultChunk
-
-        # The sandbox is already connected - just use it!
-        # Upload files, execute commands, etc.
-
-        yield StreamMessageChunk(type="message", data="Starting setup...")
-
-        # Example: upload a setup script
-        # await sandbox.fs.upload_file(script.encode(), "/setup.sh")
-
-        # Example: execute commands
-        # result = await sandbox.process.exec("bash /setup.sh")
-        # yield StreamMessageChunk(type="message", data=result.result)
-
-        yield StreamResultChunk(type="result", data={"status": "ok"})
-
-    async def evaluate_instance(self, task_id: str, sandbox: AsyncSandbox):
-        """Evaluate solution in sandbox environment."""
-        from benchmark_service import StreamMessageChunk, StreamResultChunk
-
-        # Run tests in the sandbox
-        yield StreamMessageChunk(type="message", data="Running tests...")
-
-        # Example: execute tests
-        # result = await sandbox.process.exec("pytest tests/")
-        # yield StreamMessageChunk(type="message", data=result.result)
-
-        # Yield final evaluation result
-        yield StreamResultChunk(type="result", data={"resolved": True, "score": 1.0})
-
-    def calculate_final_score(self, evaluation_results: dict[str, Any]) -> FinalScoreResult:
-        """Calculate aggregate score from all evaluations."""
-        from benchmark_service.schemas import FinalScoreResult
-
-        total = len(evaluation_results)
-        resolved = sum(1 for r in evaluation_results.values() if r.get("resolved", False))
-        score = (resolved / total * 100) if total > 0 else 0.0
-
-        return FinalScoreResult(score=score, metadata={"total": total, "resolved": resolved})
-```
-
-**Streaming Chunk Types:**
-
-When yielding from `setup_task` or `evaluate_instance`, use these Pydantic models:
-- `StreamMessageChunk(type="message", data="...")` - Log messages and progress updates
-- `StreamResultChunk(type="result", data={...})` - Final result (any structure)
-- `StreamErrorChunk(type="error", data="...")` - Error messages
-
-These are unified as the `StreamChunk` union type for type safety.
-```
-
-### 2. Update `main.py`
-
-Pass your benchmark to `create_app()`:
-
-```python
-from benchmark_service import create_app
-
-# Your benchmark class implementation
-
-app = create_app(MyBenchmark())
-```
-
-### 3. Run your service
-
-```bash
-make dev
-```
-
-## API Endpoints
-
-All endpoints are fully implemented. You just implement the `BenchmarkService` methods.
-
-### `GET /health`
-Health check.
-
-```bash
-curl http://localhost:8000/health
-```
-
-### `GET /verify-task-ids`
-Verify which task IDs exist.
-
-```bash
-curl "http://localhost:8000/verify-task-ids?task_ids=task1&task_ids=task2"
-```
-
-### `GET /retrieve-task/`
-Get task metadata.
-
-```bash
-curl "http://localhost:8000/retrieve-task/?task_id=example-task-1"
-```
-
-### `POST /evaluate-response/`
-Evaluate a text response.
-
-```bash
-curl -X POST http://localhost:8000/evaluate-response/ \
-  -H "Content-Type: application/json" \
-  -d '{"task_id": "example-task-1", "response": "Hello, World!"}'
-```
-
-### `WebSocket /ws/setup-task`
-Setup a task in a sandbox (for execution-based benchmarks).
-
-### `WebSocket /ws/evaluate-instance`
-Evaluate in a sandbox (for execution-based benchmarks).
-
-### `POST /final-score/`
-Calculate aggregate score.
-
-```bash
-curl -X POST http://localhost:8000/final-score/ \
-  -H "Content-Type: application/json" \
-  -d '{"evaluation_results": {"task1": {...}, "task2": {...}}}'
-```
-
-## BenchmarkService Methods
-
-### Methods to Implement
-
-| Method | Description | Required |
-|--------|-------------|----------|
-| `load_dataset()` | Load and return task dataset as dict | Yes |
-| `retrieve_task()` | Get task metadata | Yes |
-| `evaluate_response()` | Evaluate text response | For text-based benchmarks |
-| `setup_task()` | Setup task in sandbox | For execution benchmarks |
-| `evaluate_instance()` | Evaluate in sandbox | For execution benchmarks |
-| `calculate_final_score()` | Aggregate results | Yes |
-
-### Methods Provided by Base Class
-
-These are already implemented - you don't need to override them:
-
-| Method | Description |
-|--------|-------------|
-| `__init__()` | Constructor that calls `load_dataset()` and stores tasks |
-| `filter_tasks()` | Filter tasks by IDs or slice |
-| `validate_task_ids()` | Validate task IDs exist |
-
-## Docker
-
-Build and run:
+Build and run using Docker:
 
 ```bash
 make docker-build
 make docker-run
 ```
 
-## Development Commands
+The dataset is downloaded during the Docker build process, so no separate setup is needed.
 
-```bash
-make help            # Show this help message
-make install         # Install dependencies
-make dev             # Start the development server
-make lint            # Check style with ruff
-make format          # Format code with ruff
-make typecheck       # Type check code with basedpyright
-make test            # Run tests
-make docker-build    # Build Docker image
-make docker-run      # Run Docker container
+## Dataset
+
+- **Name:** SWE-bench_Verified
+- **Source:** `princeton-nlp/SWE-bench_Verified` (HuggingFace)
+- **Size:** 500 verified instances
+- **Cache Location:** `/tmp/swe-bench-verified/`
+- **Repositories:** Django, Flask, Matplotlib, Pandas, Pytest, Requests, Scikit-learn, Sphinx, SymPy, and more
+
+Each instance contains:
+- `instance_id`: Unique task identifier (e.g., `django__django-12453`)
+- `problem_statement`: GitHub issue description
+- `base_commit`: Git commit hash to start from
+- `test_patch`: Gold test patch
+- `patch`: Gold solution patch (for reference)
+- `repo`, `version`: Repository and version information
+
+## Docker Images
+
+Each task uses a pre-built Docker image with the repository and dependencies:
 
 ```
+ghcr.io/epoch-research/swe-bench.eval.x86_64.{task_id}:latest
+```
 
-## Next Steps
+These images are maintained by [Epoch Research](https://github.com/epoch-research/swe-bench-docker) and contain:
+- Repository cloned at the base commit
+- All dependencies installed
+- Testing framework configured
 
-1. Fork this repository
-2. Modify `main.py` with your `BenchmarkService` implementation
-3. Test with `make run` and visit `/docs`
-4. Deploy with Docker
+## Resource Requirements
+
+**Default allocation per task:**
+- vCPU: 2 cores
+- Memory: 4 GB
+- Disk: 10 GB
+
+**Large tasks** (require more resources):
+- `scikit-learn__scikit-learn-14710`
+- `psf__requests-2317`
+
+These receive 4 vCPU and 8 GB memory.
+
+## API Endpoints
+
+### Health Check
+```http
+GET /health
+```
+
+Returns service status.
+
+### Verify Task IDs
+```http
+POST /verify-task-ids
+Content-Type: application/json
+
+{
+  "task_ids": ["django__django-12453", "flask__flask-4045"]
+}
+```
+
+Validates that task IDs exist in the dataset.
+
+### Retrieve Task
+```http
+GET /retrieve-task/{task_id}
+```
+
+Returns task metadata including:
+- Docker image name
+- Problem statement
+- Resource requirements
+- Working directory
+
+### Setup Task (WebSocket)
+```http
+WS /ws/setup-task
+```
+
+Connects to a sandbox and:
+1. Uploads the setup script
+2. Resets the repository to the base commit
+3. Applies repository-specific pre-install commands
+4. Streams progress logs
+
+**Message format:**
+```json
+{"type": "message", "data": "log line..."}
+{"type": "result", "data": {"status": "ok"}}
+```
+
+### Evaluate Instance (WebSocket)
+```http
+WS /ws/evaluate-instance
+```
+
+Evaluates a solution in the sandbox:
+1. Captures the agent's changes (git diff)
+2. Generates and uploads evaluation script
+3. Runs the test suite
+4. Grades test results using SWE-bench's grading logic
+5. Streams test output and final results
+
+**Message format:**
+```json
+{"type": "message", "data": "test output..."}
+{"type": "result", "data": {
+  "resolved": true,
+  "patch_successfully_applied": true,
+  "resolution_status": "FULL",
+  "fail_to_pass": {"success": [...], "failure": [...]},
+  "pass_to_pass": {"success": [...], "failure": [...]},
+  "f2p_score": 1.0,
+  "p2p_score": 1.0,
+  "prediction": "diff --git ..."
+}}
+```
+
+### Evaluate Response
+```http
+POST /evaluate-response
+```
+
+**Not supported** - SWE-bench requires sandbox evaluation. Use `/ws/evaluate-instance` instead.
+
+### Calculate Final Score
+```http
+POST /final-score
+Content-Type: application/json
+
+{
+  "evaluation_results": {
+    "task_id_1": {"resolved": true, ...},
+    "task_id_2": {"resolved": false, ...}
+  }
+}
+```
+
+Returns aggregate score as percentage of resolved tasks:
+
+```json
+{
+  "tasks_evaluated": ["task_id_1", "task_id_2"],
+  "final_score": 50.0,
+  "metadata": {
+    "resolved_tasks": ["task_id_1"],
+    "unresolved_tasks": ["task_id_2"]
+  }
+}
+```
+
+## Evaluation Process
+
+The evaluation follows SWE-bench's official grading methodology:
+
+1. **Capture Prediction:** Extract agent's changes via `git diff`
+2. **Run Tests:** Execute the test suite using the task's evaluation script
+3. **Parse Output:** Extract test results from output using repository-specific parsers
+4. **Grade Results:** Compare against gold test specifications:
+   - **Fail-to-Pass (F2P):** Tests that should transition from failing to passing
+   - **Pass-to-Pass (P2P):** Tests that should remain passing
+5. **Determine Resolution:**
+   - `FULL`: All F2P tests pass, all P2P tests pass
+   - `PARTIAL`: Some tests pass
+   - `NO`: No tests pass or errors occurred
+
+## Development
+
+### Available Commands
+
+```bash
+make help          # Show available commands
+make install       # Install dependencies
+make setup         # Download SWE-bench dataset
+make dev           # Start development server
+make lint          # Check code style
+make format        # Format code
+make typecheck     # Type check with basedpyright
+make test          # Run tests
+make docker-build  # Build Docker image
+make docker-run    # Run Docker container
+```
+
+### Project Structure
+
+```
+.
+├── main.py                 # SWEBenchService implementation
+├── swebench_utils/         # Utility modules
+│   ├── __init__.py
+│   ├── schemas.py          # EvaluationResult model
+│   ├── evaluation.py       # Test grading logic
+│   ├── dataset.py          # Dataset loading
+│   └── test_spec.py        # Test spec generation
+├── setup.sh                # Environment setup script
+├── src/
+│   └── benchmark_service/  # Framework (template provided)
+├── pyproject.toml
+├── Dockerfile
+├── Makefile
+└── README.md
+```
+
+## License
+
+This service uses the SWE-bench benchmark. Please cite the original work:
+
+```bibtex
+@inproceedings{jimenez2024swebench,
+  title={SWE-bench: Can Language Models Resolve Real-World GitHub Issues?},
+  author={Jimenez, Carlos E and Yang, John and Wettig, Alexander and Yao, Shunyu and Pei, Kexin and Press, Ofir and Narasimhan, Karthik},
+  booktitle={ICLR},
+  year={2024}
+}
+```

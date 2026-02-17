@@ -1,116 +1,215 @@
 """
-Benchmark service entry point.
+SWE-bench Benchmark Service.
 
-Create your own benchmark service by implementing the BenchmarkService abstract
-class and passing your implementation to the create_app() function to create
-the FastAPI server.
+This service implements the SWE-bench benchmark using the benchmark service template framework.
 """
 
+import uuid
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 
-from daytona import AsyncSandbox
+from daytona import AsyncSandbox, SessionExecuteRequest
+from swebench.harness.test_spec.test_spec import make_test_spec
 
-from benchmark_service import (
-    BenchmarkService,
-    create_app,
-)
-
+from benchmark_service import BenchmarkService, create_app
 from benchmark_service.schemas import (
     EvaluateResponseRequest,
     FinalScoreResult,
     Resources,
     RetrieveTaskResponse,
     StreamChunk,
-    StreamErrorChunk,
     StreamMessageChunk,
     StreamResultChunk,
 )
+from swebench_utils import (
+    DISK_PATH,
+    create_evaluation_script,
+    create_run_command,
+    get_pre_install_commands,
+    grade_test_output,
+    load_dataset_from_disk,
+)
 
 
-class MyBenchmark(BenchmarkService):
+async def stream_command(
+    sandbox: AsyncSandbox, command: str, cwd: str = "/testbed", ignore_error: bool = False
+) -> AsyncGenerator[str, None]:
     """
-    TODO: Replace this example with your benchmark implementation.
+    Execute a command in a sandbox and stream output line by line.
 
-    This example shows a simple text-based Q&A benchmark.
-    Modify it to load your own dataset and implement your evaluation logic.
+    Args:
+        sandbox: The sandbox instance
+        command: Command to execute
+        cwd: Working directory
+        ignore_error: Whether to ignore non-zero exit codes
+
+    Yields:
+        Output lines from the command
     """
+    session_id = f"{sandbox.id}-{str(uuid.uuid4())}"
+
+    try:
+        # Create session
+        await sandbox.process.create_session(session_id)
+
+        # Execute command asynchronously
+        session_exec_resp = await sandbox.process.execute_session_command(
+            session_id, SessionExecuteRequest(command=f"cd {cwd} && {command}", run_async=True)
+        )
+
+        cmd_id = session_exec_resp.cmd_id
+        if not cmd_id:
+            raise ValueError(f"Failed to execute command in session {session_id}")
+
+        # Collect output lines
+        output_lines: list[str] = []
+
+        def on_output(text: str) -> None:
+            if text.strip():
+                output_lines.append(text)
+
+        # Stream logs
+        await sandbox.process.get_session_command_logs_async(
+            session_id=session_id,
+            command_id=cmd_id,
+            on_stdout=on_output,
+            on_stderr=on_output,
+        )
+
+        # Yield collected lines
+        for line in output_lines:
+            yield line
+
+        # Check exit code
+        cmd = await sandbox.process.get_session_command(session_id, cmd_id)
+        if cmd.exit_code != 0 and not ignore_error:
+            raise ValueError(f"Command failed with exit code {cmd.exit_code}")
+
+    finally:
+        try:
+            await sandbox.process.delete_session(session_id)
+        except Exception:
+            # Session cleanup can fail if sandbox is being terminated
+            pass
+
+
+class SWEBenchService(BenchmarkService):
+    """SWE-bench benchmark implementation."""
 
     def load_dataset(self) -> dict[str, Any]:
-        """Load the benchmark dataset."""
-        return {
-            "example-task-1": {
-                "problem": "Write a function that returns 'Hello, World!'",
-                "answer": "Hello, World!",
-            },
-            "example-task-2": {
-                "problem": "What is 2 + 2?",
-                "answer": "4",
-            },
-        }
+        """Load SWE-bench_Verified dataset from disk."""
+        if not DISK_PATH.exists():
+            raise FileNotFoundError(f"Dataset not found at {DISK_PATH}. Run 'make setup' first.")
+
+        return load_dataset_from_disk()
 
     def retrieve_task(self, task_id: str, skip_validation: bool = False) -> RetrieveTaskResponse:
-        """Retrieve task metadata."""
+        """Retrieve task metadata for SWE-bench task."""
         if not skip_validation:
             self.validate_task_ids([task_id])
 
         task = self.tasks[task_id]
+        docker_image = f"ghcr.io/epoch-research/swe-bench.eval.x86_64.{task_id}:latest"
+        problem_statement = task.get("problem_statement", "")
+
+        # Default: 2 vCPU, 4GB memory
+        resources = Resources(vcpu=2, memory=4, disk=10)
+
+        # Larger tasks need more resources
+        if task_id in ["scikit-learn__scikit-learn-14710", "psf__requests-2317"]:
+            resources.vcpu = 4
+            resources.memory = 8
 
         return RetrieveTaskResponse(
-            docker_image="python:3.12-slim",
-            problem_statement=task["problem"],
-            request_setup=False,
-            cwd="/workspace",
-            resources=Resources(vcpu=2, memory=4, disk=10),
+            docker_image=docker_image,
+            problem_statement=problem_statement,
+            request_setup=True,
+            cwd="/testbed",
+            resources=resources,
         )
 
     async def setup_task(self, task_id: str, sandbox: AsyncSandbox) -> AsyncGenerator[StreamChunk, None]:
-        """Setup task in sandbox (not needed for this example)."""
-        yield StreamMessageChunk(type="message", data=f"Setting up task {task_id}...")
-        yield StreamMessageChunk(type="message", data="No setup required for example benchmark")
+        """Setup SWE-bench task environment in sandbox."""
+        task = self.tasks[task_id]
+        base_commit = task["base_commit"]
+
+        # Build setup script: base + repo-specific pre-install
+        setup_script = Path("setup.sh").read_text()
+        pre_install = get_pre_install_commands(task["repo"], task["version"])
+        if pre_install:
+            setup_script += "\n" + "\n".join(pre_install)
+
+        # Upload setup script
+        await sandbox.fs.upload_file(setup_script.encode("utf-8"), "/setup.sh")
+        yield StreamMessageChunk(type="message", data="Uploaded setup script")
+
+        # Execute setup with streaming (ignore errors as some pre-install commands may fail)
+        command = "chmod +x /setup.sh && bash /setup.sh {}".format(base_commit)
+
+        async for line in stream_command(sandbox, command, cwd="/testbed", ignore_error=True):
+            yield StreamMessageChunk(type="message", data=line)
+
         yield StreamResultChunk(type="result", data={"status": "ok"})
 
     def evaluate_response(self, request: EvaluateResponseRequest) -> Any:
-        """Evaluate a text response."""
-        task = self.tasks[request.task_id]
-
-        # Simple string comparison
-        is_correct = request.response.strip() == task["answer"]
-
-        # Return evaluation result as a dict (you can use any structure)
-        return {
-            "task_id": request.task_id,
-            "resolved": is_correct,
-            "score": 1.0 if is_correct else 0.0,
-            "expected": task["answer"],
-            "received": request.response.strip(),
-        }
+        """SWE-bench requires sandbox evaluation."""
+        raise NotImplementedError("SWE-bench evaluation requires sandbox. Use /ws/evaluate-instance endpoint.")
 
     async def evaluate_instance(self, task_id: str, sandbox: AsyncSandbox) -> AsyncGenerator[StreamChunk, None]:
-        """Evaluate in sandbox (not implemented for this example)."""
-        yield StreamMessageChunk(type="message", data=f"Evaluating task {task_id}...")
-        yield StreamErrorChunk(
-            type="error",
-            data="Sandbox evaluation not implemented. Use /evaluate-response/ endpoint instead.",
-        )
+        """Evaluate SWE-bench solution in sandbox."""
+        self.validate_task_ids([task_id])
+        task = self.tasks[task_id]
+
+        # Get agent's prediction (git diff)
+        yield StreamMessageChunk(type="message", data="Capturing agent's changes...")
+        result = await sandbox.process.exec(command="git add -N . && git diff HEAD", cwd="/testbed")
+        prediction = result.result or None
+
+        # Create and upload evaluation script
+        test_spec = make_test_spec(task)
+        eval_script = create_evaluation_script(test_spec, task_id)
+        await sandbox.fs.upload_file(eval_script.encode("utf-8"), "/root/eval.sh")
+        yield StreamMessageChunk(type="message", data="Uploaded evaluation script")
+
+        # Execute tests with streaming
+        run_command = create_run_command(task_id)
+        test_output: list[str] = []
+
+        yield StreamMessageChunk(type="message", data="Running tests...")
+        async for line in stream_command(sandbox, run_command, cwd="/testbed", ignore_error=True):
+            yield StreamMessageChunk(type="message", data=line)
+            test_output.append(line)
+
+        # Grade results
+        full_output = "\n".join(test_output)
+        evaluation_result = grade_test_output(full_output, test_spec, prediction)
+
+        yield StreamResultChunk(type="result", data=evaluation_result.model_dump())
 
     def calculate_final_score(self, evaluation_results: dict[str, Any]) -> FinalScoreResult:
-        """Calculate final score across all evaluations."""
+        """Calculate final score as percentage of resolved tasks."""
         total = len(evaluation_results)
 
-        # Count resolved tasks based on result structure
-        resolved = sum(1 for r in evaluation_results.values() if r and r.get("resolved", False))
+        resolved_tasks: list[str] = []
+        unresolved_tasks: list[str] = []
 
-        score = (resolved / total * 100) if total > 0 else 0.0
+        for task_id, result in evaluation_results.items():
+            if result and result.get("resolved", False):
+                resolved_tasks.append(task_id)
+            else:
+                unresolved_tasks.append(task_id)
+
+        resolved = len(resolved_tasks)
+        score = round((resolved / total) * 100, 6) if total > 0 else 0.0
 
         metadata = {
-            "total_tasks": total,
-            "resolved_tasks": resolved,
-            "unresolved_tasks": total - resolved,
+            "resolved_tasks": resolved_tasks,
+            "unresolved_tasks": unresolved_tasks,
         }
 
         return FinalScoreResult(score=score, metadata=metadata)
 
 
-# Create the FastAPI app with your benchmark implementation
-app = create_app(MyBenchmark())
+# Create the FastAPI app with SWE-bench implementation
+app = create_app(SWEBenchService())
