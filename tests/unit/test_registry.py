@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from swebench_utils import load_dataset_from_disk
+from swebench_service import load_dataset_from_disk
 
 
 class TestRegistry:
@@ -58,7 +58,7 @@ class TestRegistry:
     @pytest.mark.experimental
     async def test_images_exist(self) -> None:
         """Verify all Docker images exist in registry (SLOW)."""
-        from main import SWEBenchService
+        from swebench_service.benchmark_service import SWEBenchService
 
         service = SWEBenchService()
         task_ids = list(service.tasks.keys())

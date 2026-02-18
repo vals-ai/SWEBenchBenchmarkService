@@ -1,6 +1,6 @@
 import pytest
 
-from swebench_utils import load_dataset_from_disk
+from swebench_service import load_dataset_from_disk
 from tests.utils import BenchmarkServiceTestClient
 
 

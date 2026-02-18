@@ -25,7 +25,7 @@ from swebench.harness.grading import (
 )
 from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
 
-from swebench_utils.schemas import EvaluationResult
+from swebench_service.schemas import EvaluationResult
 
 
 def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | None) -> EvaluationResult:

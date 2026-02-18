@@ -336,6 +336,17 @@ wheels = [
 ]
 
 [[package]]
+name = "create-benchmark-service"
+version = "0.1.0"
+source = { git = "ssh://git@github.com/vals-ai/create-benchmark-service.git?rev=main#b8c1ade1874012963ac0c4098aa4e99bfa77e919" }
+dependencies = [
+    { name = "click" },
+    { name = "daytona" },
+    { name = "fastapi", extra = ["standard"] },
+    { name = "jinja2" },
+]
+
+[[package]]
 name = "datasets"
 version = "4.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2259,13 +2270,12 @@ wheels = [
 ]
 
 [[package]]
-name = "swebench-benchmark-service"
+name = "swebench-service"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "create-benchmark-service" },
     { name = "datasets" },
-    { name = "daytona" },
-    { name = "fastapi", extra = ["standard"] },
     { name = "pandas" },
     { name = "swebench" },
 ]
@@ -2281,9 +2291,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "create-benchmark-service", git = "ssh://git@github.com/vals-ai/create-benchmark-service.git?rev=main" },
     { name = "datasets", specifier = ">=4.4.2" },
-    { name = "daytona", specifier = ">=0.143.0" },
-    { name = "fastapi", extras = ["standard"], specifier = ">=0.127.1" },
     { name = "pandas", specifier = "<3.0.0" },
     { name = "swebench", specifier = "==4.1.0" },
 ]

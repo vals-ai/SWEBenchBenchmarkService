@@ -14,8 +14,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY pyproject.toml ./
 
 # Install dependencies
-RUN uv venv && \
-    uv pip install -e .
+RUN uv sync
 
 # Copy application code
 COPY . .
@@ -26,5 +25,5 @@ RUN uv run python -m swebench_utils.dataset
 # Expose port
 EXPOSE 8000
 
-# Run the application with WebSocket ping settings for long-running operations
+# Run the application
 CMD ["uv", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--ws-ping-interval", "30", "--ws-ping-timeout", "10"]

@@ -15,9 +15,9 @@ def setup_dataset(tmp_path_factory: TempPathFactory, monkeypatch: MonkeyPatch) -
     task_directory = tmp_path / "swe-bench-verified"
 
     # Update monkeypatch paths for new structure
-    monkeypatch.setattr("swebench_utils.dataset.DISK_PATH", task_directory)
+    monkeypatch.setattr("swebench_service.dataset.DISK_PATH", task_directory)
 
-    from swebench_utils.dataset import setup_dataset
+    from swebench_service.dataset import setup_dataset
 
     setup_dataset()
 
