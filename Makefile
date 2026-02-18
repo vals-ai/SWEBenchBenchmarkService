@@ -17,7 +17,7 @@ install: ## Install dependencies
 	uv sync --dev
 
 setup: ## Download SWE-bench dataset
-	uv run python -m swebench_utils.dataset
+	uv run python -m swebench_service.dataset
 
 dev: venv_check  ## Start the development server
 	uv run fastapi dev main.py --port 0
