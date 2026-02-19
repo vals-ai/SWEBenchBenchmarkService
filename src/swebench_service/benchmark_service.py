@@ -119,8 +119,7 @@ class SWEBenchService(BenchmarkService):
             test_output.append(line)
 
         # Grade results
-        full_output = "\n".join(test_output)
-        evaluation_result = grade_test_output(full_output, test_spec, prediction)
+        evaluation_result = grade_test_output("".join(test_output), test_spec, prediction)
 
         yield StreamResultChunk(type="result", data=evaluation_result.model_dump())
 
