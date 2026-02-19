@@ -11,7 +11,10 @@ RUN apt-get update && \
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 # Copy dependency files
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
+
+# Install git for fetching git dependencies
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies
 RUN uv sync
@@ -20,7 +23,7 @@ RUN uv sync
 COPY . .
 
 # Download SWE-bench dataset during build
-RUN uv run python -m swebench_utils.dataset
+RUN uv run python -m swebench_service.dataset
 
 # Expose port
 EXPOSE 8000
