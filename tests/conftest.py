@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import pytest
-from pytest import MonkeyPatch, TempPathFactory
+from pytest import Config, MonkeyPatch, TempPathFactory
 
 
 @pytest.fixture
@@ -14,11 +14,16 @@ def setup_dataset(tmp_path_factory: TempPathFactory, monkeypatch: MonkeyPatch) -
     tmp_path = tmp_path_factory.mktemp("data")
     task_directory = tmp_path / "swe-bench-verified"
 
-    monkeypatch.setattr("src.setup.__main__._DISK_PATH", task_directory)
-    monkeypatch.setattr("src.utils._DISK_PATH", task_directory)
+    # Update monkeypatch paths for new structure
+    monkeypatch.setattr("swebench_service.dataset.DISK_PATH", task_directory)
 
-    from src.setup.__main__ import main
+    from swebench_service.dataset import setup_dataset
 
-    main()
+    setup_dataset()
 
     return task_directory
+
+
+def pytest_configure(config: Config) -> None:
+    """Configure pytest with asyncio mode."""
+    config.option.asyncio_mode = "auto"

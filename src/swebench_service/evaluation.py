@@ -1,6 +1,6 @@
 """
 Isolated file for grading the test output for a given instance.
-We isolate this file from utils.py as all dependencies come from the swebench package.
+We isolate this file from other utilities as all dependencies come from the swebench package.
 """
 
 from swebench.harness.constants import (
@@ -25,20 +25,21 @@ from swebench.harness.grading import (
 )
 from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
 
-from src.models import EvaluationResult
+from swebench_service.schemas import EvaluationResult
 
 
-def grade_test_output(test_output: str, task_id: str, prediction: str | None) -> "EvaluationResult":
+def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | None) -> EvaluationResult:
     """
     Grade test output in memory using SWE-bench's logic.
 
+    Args:
+        test_output: The output from running tests
+        test_spec: The test specification for this task
+        prediction: The patch/diff that was applied (optional)
+
     Returns:
-        dict with resolved status, scores, and detailed test results
+        EvaluationResult with resolved status, scores, and detailed test results
     """
-    from src.utils import fetch_test_spec
-
-    test_spec: TestSpec = fetch_test_spec(task_id)
-
     # Check for error codes
     bad_codes = [
         APPLY_PATCH_FAIL,

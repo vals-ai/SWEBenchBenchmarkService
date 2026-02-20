@@ -3,20 +3,18 @@ import json
 import logging
 import os
 from asyncio import Task
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from typing import Any
 
 from daytona import AsyncSandbox, ExecuteResponse
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from httpx import AsyncClient
+from httpx import Response
 from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
-from src.logger import get_logger
-from src.models import EvaluationResult
+from main import app
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class BenchmarkServiceTestClient:
@@ -25,11 +23,9 @@ class BenchmarkServiceTestClient:
     """
 
     _client: TestClient
-    _BASE_URL: str = "http://localhost:8001"
-    _TIMEOUT: int | None = None
 
-    def __init__(self, app: FastAPI) -> None:
-        self._client = TestClient(app)
+    def __init__(self) -> None:
+        self._client = TestClient(app, raise_server_exceptions=False)
 
     def _receive_websocket_message(self, websocket: WebSocketTestSession) -> str | dict[str, Any]:
         message: dict[str, Any] = websocket.receive_json()
@@ -37,67 +33,51 @@ class BenchmarkServiceTestClient:
             return message["data"]
 
         if message["type"] == "result":
-            return json.loads(message["data"])
+            data = message["data"]
+            # Handle both dict and string formats
+            if isinstance(data, str):
+                return json.loads(data)
+            return data
 
         raise ValueError(f"Unknown websocket message type: {message['type']}")
 
-    async def request_health_check(self) -> dict[str, str]:
+    async def request_health_check(self) -> Response:
         """
         Requests health check from benchmark service
         """
-        async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
-            response = await client.get("/health")
+        response = self._client.get("/health")
+        logger.info(f"Health check response: {response.text}")
+        return response
 
-            logger.info(f"Health check response: {response.text}")
-
-            if response.status_code != 200:
-                raise Exception(
-                    f"Health check failed with status code {response.status_code}, response: {response.text}"
-                )
-
-            return response.json()
-
-    async def request_verify_task_ids(self, task_ids: list[str]) -> dict[str, list[str]]:
+    async def request_verify_task_ids(
+        self, task_ids: list[str] | None = None, slice_str: str | None = None
+    ) -> Response:
         """
         Requests verify task ids from benchmark service
         """
+        params: dict[str, Any] = {}
+        if task_ids is not None:
+            params["task_ids"] = task_ids
+        if slice_str is not None:
+            params["slice"] = slice_str
 
-        params = {"task_ids": task_ids}
+        response = self._client.get("/verify-task-ids", params=params)
+        logger.info(f"Verify task ids response: {response.text}")
+        return response
 
-        async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
-            response = await client.get("/verify-task-ids", params=params)
-
-            logger.info(f"Verify task ids response: {response.text}")
-
-            if response.status_code != 200:
-                raise Exception(
-                    f"Verify task ids failed with status code {response.status_code}, response: {response.text}"
-                )
-
-            return response.json()
-
-    async def request_retrieve_task(self, task_id: str, skip_validation: bool = False) -> dict[str, str]:
+    async def request_retrieve_task(self, task_id: str, skip_validation: bool = False) -> Response:
         """
         Requests retrieve task from benchmark service
         """
-
         params = {"task_id": task_id, "skip_validation": str(skip_validation)}
-
-        async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
-            response = await client.get("/retrieve-task/", params=params)
-
+        response = self._client.get("/retrieve-task/", params=params)
         logger.info(f"Retrieve task response: {response.text}")
+        return response
 
-        if response.status_code != 200:
-            raise Exception(f"Retrieve task failed with status code {response.status_code}, response: {response.text}")
-
-        return response.json()
-
-    async def request_setup_task(self, task_id: str, instance_id: str) -> AsyncGenerator[dict[str, Any] | str]:
+    async def request_setup_task(self, task_id: str, instance_id: str) -> AsyncGenerator[str | dict[str, Any], None]:
         """
         Requests setup task from benchmark service via WebSocket
         """
-
         api_key = os.getenv("DAYTONA_API_KEY")
         api_url = os.getenv("DAYTONA_API_URL")
         target = os.getenv("DAYTONA_TARGET")
@@ -127,11 +107,12 @@ class BenchmarkServiceTestClient:
                     logger.info("WebSocket closed for setup task")
                     break
 
-    async def request_evaluate_instance(self, task_id: str, instance_id: str) -> AsyncGenerator[dict[str, Any] | str]:
+    async def request_evaluate_instance(
+        self, task_id: str, instance_id: str
+    ) -> AsyncGenerator[str | dict[str, Any], None]:
         """
         Requests evaluate instance from benchmark service via WebSocket
         """
-
         api_key = os.getenv("DAYTONA_API_KEY")
         api_url = os.getenv("DAYTONA_API_URL")
         target = os.getenv("DAYTONA_TARGET")
@@ -150,7 +131,7 @@ class BenchmarkServiceTestClient:
             "x-target": target,
         }
 
-        with self._client.websocket_connect("/ws/evaluate-instance/", headers=headers) as websocket:
+        with self._client.websocket_connect("/ws/evaluate-instance", headers=headers) as websocket:
             websocket.send_json(json_data)
 
             while True:
@@ -161,25 +142,16 @@ class BenchmarkServiceTestClient:
                     logger.info("WebSocket closed for evaluate instance")
                     break
 
-    async def request_final_score(self, evaluation_results: dict[str, EvaluationResult | None]) -> dict[str, Any]:
+    async def request_final_score(self, evaluation_results: Mapping[str, dict[str, Any] | None]) -> Response:
         """
         Requests final score from benchmark service
         """
-
         json_data = {"evaluation_results": evaluation_results}
         headers = {"Content-Type": "application/json"}
 
-        async with AsyncClient(base_url=self._BASE_URL, timeout=self._TIMEOUT) as client:
-            response = await client.post("/final-score", json=json_data, headers=headers)
-
-            logger.info(f"Final score response: {response.text}")
-
-            if response.status_code != 200:
-                raise Exception(
-                    f"Final score failed with status code {response.status_code}, response: {response.text}"
-                )
-
-            return response.json()
+        response = self._client.post("/final-score", json=json_data, headers=headers)
+        logger.info(f"Final score response: {response.text}")
+        return response
 
 
 async def get_session_logger(sandbox: AsyncSandbox, session_id: str, cmd_id: str, logger: logging.Logger) -> Task[None]:

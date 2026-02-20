@@ -1,30 +1,48 @@
-.PHONY: install setup benchmark-service benchmark-service-local test-unit test-integration deploy-ecs force-deploy-ecs
+.PHONY: install dev run format lint clean help
 
 PYTHON_VERSION := 3.12
-IMAGE_NAME := swebench.benchmark.service
-IMAGE_TAG := latest
 
-help:
+help: ## Show this help message
 	@echo "Available commands:"
-	@echo "  install - Initialize the .venv and download dependencies"
-	@echo "  setup - Download dataset"
-	@echo "  benchmark-service - Build and run on tracker-network (port 8001)"
-	@echo "  test-unit - Run unit tests"
-	@echo "  test-integration - Run integration tests"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-install:
+venv_check:
+	@if [ ! -f .venv/bin/activate ]; then \
+		echo "Virtualenv not found! Run \`make install\` first."; \
+		exit 1; \
+	fi
+
+install: ## Install dependencies
 	uv venv --python $(PYTHON_VERSION)
-	uv sync --directory . --group dev
-	
-setup:
-	uv run python -m src.setup
+	uv sync --dev
 
-benchmark-service:
+setup: ## Download SWE-bench dataset
+	uv run python -m swebench_service.dataset
+
+benchmark-service:  ## Start benchmark service via docker compose
 	docker compose down --volumes
 	docker compose up --build
 
-test-unit:
-	uv run pytest tests/unit -vv
+dev: venv_check  ## Start the development server
+	uv run fastapi dev main.py --port 0
 
-test-integration:
-	uv run pytest tests/integration -vv
+lint: ## CHeck style with ruff
+	uv run ruff check .
+
+format: ## Format code with ruff
+	uv run ruff check --fix .
+
+typecheck: ## Type check code with basedpyright
+	uv run basedpyright .
+
+test: ## Run tests
+	uv run pytest
+
+test-experimental: ## Run experimental tests (slow, requires Daytona credentials)
+	uv run pytest -m experimental -v
+
+docker-build: ## Build Docker image
+	docker build -t benchmark-service:latest .
+
+docker-run: ## Run Docker container
+	docker run -p 8000:8000 benchmark-service:latest
