@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -338,7 +338,7 @@ wheels = [
 [[package]]
 name = "create-benchmark-service"
 version = "0.1.0"
-source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=main#214b9e8152f389323c3d11a5516626d4b05dbbb1" }
+source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=main#a0876e76d8011ee5ac2805a20e7a89422ccb9859" }
 dependencies = [
     { name = "click" },
     { name = "daytona" },
