@@ -5,9 +5,6 @@ from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
 
-from daytona import AsyncSandbox
-from swebench.harness.test_spec.test_spec import make_test_spec
-
 from benchmark_service import BenchmarkService
 from benchmark_service.schemas import (
     EvaluateResponseRequest,
@@ -19,6 +16,9 @@ from benchmark_service.schemas import (
     StreamResultChunk,
 )
 from benchmark_service.utils import stream_command
+from daytona import AsyncSandbox
+from swebench.harness.test_spec.test_spec import make_test_spec
+
 from swebench_service import (
     DISK_PATH,
     create_evaluation_script,
