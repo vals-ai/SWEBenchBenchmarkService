@@ -42,6 +42,13 @@ def create_evaluation_script(test_spec: TestSpec, task_id: str) -> str:
     if "django" in task_id:
         evaluation_script = evaluation_script.replace("locale-gen", "locale-gen en_US.UTF-8")
 
+    # BUG: Sphinx uses tox to run pytest, but the parser needs per-test PASSED/FAILED
+    if test_spec.repo == "sphinx-doc/sphinx":
+        evaluation_script = evaluation_script.replace(
+            "tox --current-env -epy39 -v --",
+            "tox --current-env -epy39 -v -- -rA",
+        )
+
     return evaluation_script
 
 

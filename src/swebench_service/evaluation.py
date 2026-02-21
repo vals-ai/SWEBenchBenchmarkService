@@ -3,6 +3,9 @@ Isolated file for grading the test output for a given instance.
 We isolate this file from other utilities as all dependencies come from the swebench package.
 """
 
+import re
+import unicodedata
+
 from swebench.harness.constants import (
     APPLY_PATCH_FAIL,
     END_TEST_OUTPUT,
@@ -71,12 +74,23 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
     # Extract content between markers
     test_content = test_output.split(START_TEST_OUTPUT)[1].split(END_TEST_OUTPUT)[0]
 
+    # BUG: Split concatenated test results onto separate lines. The stream_command layer
+    # can emit chunks without newlines, fusing adjacent test results together.
+    # Django-style: "... ok<next_test>" -> "... ok\n<next_test>"
+    test_content = re.sub(r"(\.\.\. (?:ok|OK|FAIL|ERROR|skipped))(?=\S)", r"\1\n", test_content)
+
+    # BUG: Pytest-style: "...real]PASSED lib/" -> "...real]\nPASSED lib/"
+    test_content = re.sub(r"(?<=\S)((?:PASSED|FAILED|ERROR|SKIPPED|XFAIL) )", r"\n\1", test_content)
+
     # Parse test content
     status_map = log_parser(test_content, test_spec)
 
     # Fallback to full content if nothing found between markers
     if not status_map:
         status_map = log_parser(test_output, test_spec)
+
+    # BUG: Remove all unicode characters that are control characters
+    status_map = {"".join(c for c in k if unicodedata.category(c)[0] != "C"): v for k, v in status_map.items()}
 
     # === END IN-MEMORY get_logs_eval ===
 
