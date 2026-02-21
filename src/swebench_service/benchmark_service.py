@@ -55,7 +55,7 @@ class SWEBenchService(BenchmarkService):
 
         # Larger tasks need more resources
         if task_id in ["scikit-learn__scikit-learn-14710", "psf__requests-2317"]:
-            resources.vcpu = 8
+            resources.vcpu = 4
             resources.memory = 8
 
         return RetrieveTaskResponse(

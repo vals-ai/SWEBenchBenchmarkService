@@ -38,6 +38,15 @@ def create_evaluation_script(test_spec: TestSpec, task_id: str) -> str:
     """
     evaluation_script = test_spec.eval_script
 
+    # BUG: Scikit-learn C extensions use OpenMP for parallelism. In constrained sandbox
+    # environments, thread oversubscription causes deadlocks during test execution.
+    # Pinning to 1 thread prevents this while still allowing tests to pass correctly.
+    if "scikit-learn" in task_id:
+        evaluation_script = evaluation_script.replace(
+            "set -uxo pipefail",
+            "set -uxo pipefail\nexport OMP_NUM_THREADS=1\nexport OPENBLAS_NUM_THREADS=1",
+        )
+
     # Django-specific fix for locale generation
     if "django" in task_id:
         evaluation_script = evaluation_script.replace("locale-gen", "locale-gen en_US.UTF-8")
