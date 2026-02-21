@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Install docker CLI for image validation
 RUN apt-get update && \
-    apt-get install -y docker.io && \
+    apt-get install -y curl docker.io && \
     rm -rf /var/lib/apt/lists/*
 
 # Install uv for faster package management
