@@ -1,5 +1,6 @@
 """Test specification and script generation utilities."""
 
+import re
 from typing import Any, cast
 
 from swebench.harness.constants import MAP_REPO_VERSION_TO_SPECS
@@ -57,6 +58,18 @@ def create_evaluation_script(test_spec: TestSpec, task_id: str) -> str:
             "tox --current-env -epy39 -v --",
             "tox --current-env -epy39 -v -- -rA",
         )
+
+    # BUG: `git checkout <base_commit> <test_files>` silently fails for new test files that
+    # didn't exist at base_commit (e.g. when the agent created a new test file with the same
+    # name as the gold test patch). The untracked file then causes `git apply` to fail with
+    # "already exists in working directory". Append `git clean -f` for the same paths so
+    # untracked new test files are removed before the patch is applied, and again after the
+    # run to fully revert the working tree.
+    evaluation_script = re.sub(
+        r"(git checkout \S+ )([^\n]+)",
+        r"\1\2 2>/dev/null; git clean -f -- \2 2>/dev/null || true",
+        evaluation_script,
+    )
 
     return evaluation_script
 
