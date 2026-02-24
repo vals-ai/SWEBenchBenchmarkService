@@ -74,7 +74,9 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
     # Extract content between markers
     test_content = test_output.split(START_TEST_OUTPUT)[1].split(END_TEST_OUTPUT)[0]
 
-    # BUG: Remove control characters BEFORE parsing so log_parser regexes can match correctly
+    # BUG: Strip ANSI escape sequences before stripping control chars; otherwise the ESC byte
+    # is removed but the bracket remnants ([32m, [0m) corrupt test names and break split regexes.
+    test_content = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", test_content)
     test_content = "".join(c for c in test_content if unicodedata.category(c)[0] != "C")
 
     # BUG: Split concatenated test results onto separate lines. The stream_command layer
@@ -87,8 +89,11 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
     # Django-style concatenation variant: "... ok<next_test>" -> "... ok\n<next_test>"
     test_content = re.sub(r"(\.\.\. (?:ok|OK|FAIL|ERROR|skipped))(?=\S)", r"\1\n", test_content)
 
-    # BUG: Pytest-style: "...real]PASSED lib/" -> "...real]\nPASSED lib/"
+    # BUG: Pytest-style "PASSED at start": "...real]PASSED lib/" -> "...real]\nPASSED lib/"
     test_content = re.sub(r"(?<=\S)((?:PASSED|FAILED|ERROR|SKIPPED|XFAIL) )", r"\n\1", test_content)
+
+    # BUG: Pytest-style "PASSED at end": "test[Ba] PASSEDtest[Bi]" -> "test[Ba] PASSED\ntest[Bi]"
+    test_content = re.sub(r"((?:PASSED|FAILED|ERROR|SKIPPED|XFAIL))(?=\S)", r"\1\n", test_content)
 
     # Parse test content
     status_map = log_parser(test_content, test_spec)
