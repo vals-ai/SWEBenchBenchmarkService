@@ -74,9 +74,17 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
     # Extract content between markers
     test_content = test_output.split(START_TEST_OUTPUT)[1].split(END_TEST_OUTPUT)[0]
 
+    # BUG: Remove control characters BEFORE parsing so log_parser regexes can match correctly
+    test_content = "".join(c for c in test_content if unicodedata.category(c)[0] != "C")
+
     # BUG: Split concatenated test results onto separate lines. The stream_command layer
     # can emit chunks without newlines, fusing adjacent test results together.
-    # Django-style: "... ok<next_test>" -> "... ok\n<next_test>"
+    # Django-style replacement variant: "test_A (class) ... test_B (class) ... ok"
+    # test_A's result was lost (replaced by test_B's header) — split so test_B parses correctly.
+    # Lookahead requires next word starts with "test" to avoid false-firing on "... oktest_B".
+    test_content = re.sub(r"\.\.\. (?=test\w* \([^)\n]+\) \.\.\.)", "\n", test_content)
+
+    # Django-style concatenation variant: "... ok<next_test>" -> "... ok\n<next_test>"
     test_content = re.sub(r"(\.\.\. (?:ok|OK|FAIL|ERROR|skipped))(?=\S)", r"\1\n", test_content)
 
     # BUG: Pytest-style: "...real]PASSED lib/" -> "...real]\nPASSED lib/"
@@ -88,9 +96,6 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
     # Fallback to full content if nothing found between markers
     if not status_map:
         status_map = log_parser(test_output, test_spec)
-
-    # BUG: Remove all unicode characters that are control characters
-    status_map = {"".join(c for c in k if unicodedata.category(c)[0] != "C"): v for k, v in status_map.items()}
 
     # === END IN-MEMORY get_logs_eval ===
 
