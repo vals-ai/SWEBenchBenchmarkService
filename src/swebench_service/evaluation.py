@@ -95,6 +95,9 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
     # BUG: Pytest-style "PASSED at end": "test[Ba] PASSEDtest[Bi]" -> "test[Ba] PASSED\ntest[Bi]"
     test_content = re.sub(r"((?:PASSED|FAILED|ERROR|SKIPPED|XFAIL))(?=\S)", r"\1\n", test_content)
 
+    # BUG: Pytest separator fused to test name: "test_foo=====" -> "test_foo\n====="
+    test_content = re.sub(r"(?<=\S)(={5,})", r"\n\1", test_content)
+
     # Parse test content
     status_map = log_parser(test_content, test_spec)
 
