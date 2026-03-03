@@ -102,8 +102,8 @@ class TestEndpoints:
 
         # Validate response structure
         assert "docker_image" in data
-        assert task_id in data["docker_image"]
-        assert data["docker_image"] == f"ghcr.io/epoch-research/swe-bench.eval.x86_64.{task_id}:latest"
+        id_docker_compatible = task_id.replace("__", "_1776_")
+        assert data["docker_image"] == f"swebench/sweb.eval.x86_64.{id_docker_compatible}:latest"
 
         assert "problem_statement" in data
         assert len(data["problem_statement"]) > 0
@@ -133,7 +133,7 @@ class TestEndpoints:
             assert response.status_code == 200
 
             data = response.json()
-            assert task_id in data["docker_image"]
+            assert task_id.replace("__", "_1776_") in data["docker_image"]
             assert len(data["problem_statement"]) > 0
 
     async def test_final_score(self, client: BenchmarkServiceTestClient) -> None:

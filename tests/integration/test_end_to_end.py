@@ -118,7 +118,7 @@ class TestEndToEnd:
         response = await test_client.request_retrieve_task(task_ids[0])
         assert response.status_code == 200
         data = response.json()
-        assert task_ids[0] in data["docker_image"]
+        assert task_ids[0].replace("__", "_1776_") in data["docker_image"]
         assert len(data["problem_statement"]) > 0
 
         # Final score
