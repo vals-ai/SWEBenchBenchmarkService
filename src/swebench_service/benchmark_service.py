@@ -47,7 +47,8 @@ class SWEBenchService(BenchmarkService):
             self.validate_task_ids([task_id])
 
         task = self.tasks[task_id]
-        docker_image = f"ghcr.io/epoch-research/swe-bench.eval.x86_64.{task_id}:latest"
+        id_docker_compatible = task_id.replace("__", "_1776_")
+        docker_image = f"swebench/sweb.eval.x86_64.{id_docker_compatible}:latest"
         problem_statement = task.get("problem_statement", "")
 
         # Default: 2 vCPU, 4GB memory

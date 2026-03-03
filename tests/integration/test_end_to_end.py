@@ -39,7 +39,7 @@ def test_client() -> BenchmarkServiceTestClient:
 class TestEndToEnd:
     async def test_evaluate_instance(self, daytona: AsyncDaytona, test_client: BenchmarkServiceTestClient) -> None:
         """Test single task evaluation with patch."""
-        task_id = "django__django-11099"
+        task_id = "matplotlib__matplotlib-22865"
 
         # Get task metadata
         response = await test_client.request_retrieve_task(task_id)
@@ -108,7 +108,7 @@ class TestEndToEnd:
         assert response.json() == {"status": "ok"}
 
         # Verify task IDs
-        task_ids = ["django__django-11099", "django__django-11333"]
+        task_ids = ["matplotlib__matplotlib-22865", "django__django-11099"]
         response = await test_client.request_verify_task_ids(task_ids)
         assert response.status_code == 200
         data = response.json()
@@ -118,7 +118,7 @@ class TestEndToEnd:
         response = await test_client.request_retrieve_task(task_ids[0])
         assert response.status_code == 200
         data = response.json()
-        assert task_ids[0] in data["docker_image"]
+        assert task_ids[0].replace("__", "_1776_") in data["docker_image"]
         assert len(data["problem_statement"]) > 0
 
         # Final score
@@ -135,7 +135,7 @@ class TestEndToEnd:
     ) -> None:
         """Test evaluating multiple instances (SLOW)."""
         # Use a smaller subset for testing
-        test_task_ids = ["django__django-11099", "astropy__astropy-12907"]
+        test_task_ids = ["matplotlib__matplotlib-22865", "django__django-11099"]
 
         results: list[dict[str, Any]] = []
 
