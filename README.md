@@ -75,10 +75,10 @@ Each instance contains:
 Each task uses a pre-built Docker image with the repository and dependencies:
 
 ```
-ghcr.io/epoch-research/swe-bench.eval.x86_64.{task_id}:latest
+swebench/sweb.eval.x86_64.{task_id}:latest
 ```
 
-These images are maintained by [Epoch Research](https://github.com/epoch-research/swe-bench-docker) and contain:
+These images are hosted on [Docker Hub](https://hub.docker.com/u/swebench) and contain:
 - Repository cloned at the base commit
 - All dependencies installed
 - Testing framework configured
