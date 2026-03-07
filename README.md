@@ -41,7 +41,7 @@ Each task requires:
    make dev
    ```
 
-The service will be available at `http://localhost:8000`. View API documentation at `http://localhost:8000/docs`.
+The service will be available at `http://localhost:8001`. View API documentation at `http://localhost:8001/docs`.
 
 ### Docker Deployment
 
