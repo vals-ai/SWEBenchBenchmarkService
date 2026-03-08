@@ -10,7 +10,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8001:8000"
+      - "8001:8001"
     privileged: true
     volumes:
       - ./logs:/logs
