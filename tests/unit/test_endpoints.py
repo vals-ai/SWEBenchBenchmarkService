@@ -110,7 +110,7 @@ class TestEndpoints:
         assert data["docker_image"] == f"swebench/sweb.eval.x86_64.{id_docker_compatible}:latest"
 
         assert "problem_path" in data
-        assert len(data["problem_path"]) > 0
+        assert data["problem_path"]
 
         assert "cwd" in data
         assert data["cwd"] == "/testbed"
@@ -135,7 +135,7 @@ class TestEndpoints:
 
             data = response.json()
             assert task_id.replace("__", "_1776_") in data["docker_image"]
-            assert len(data["problem_path"]) > 0
+            assert data["problem_path"]
 
     async def test_final_score(self, client: BenchmarkServiceTestClient) -> None:
         """Test /final-score endpoint."""
