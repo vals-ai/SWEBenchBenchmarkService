@@ -26,6 +26,10 @@ class BenchmarkServiceTestClient:
 
     def __init__(self) -> None:
         self._client = TestClient(app, raise_server_exceptions=False)
+        self._client.__enter__()
+
+    def close(self) -> None:
+        self._client.__exit__(None, None, None)
 
     def _receive_websocket_message(self, websocket: WebSocketTestSession) -> str | dict[str, Any]:
         message: dict[str, Any] = websocket.receive_json()
@@ -50,7 +54,10 @@ class BenchmarkServiceTestClient:
         return response
 
     async def request_verify_task_ids(
-        self, task_ids: list[str] | None = None, slice_str: str | None = None
+        self,
+        task_ids: list[str] | None = None,
+        slice_str: str | None = None,
+        dataset: str | None = None,
     ) -> Response:
         """
         Requests verify task ids from benchmark service
@@ -60,21 +67,27 @@ class BenchmarkServiceTestClient:
             params["task_ids"] = task_ids
         if slice_str is not None:
             params["slice"] = slice_str
+        if dataset is not None:
+            params["dataset"] = dataset
 
         response = self._client.get("/verify-task-ids", params=params)
         logger.info(f"Verify task ids response: {response.text}")
         return response
 
-    async def request_retrieve_task(self, task_id: str, skip_validation: bool = False) -> Response:
+    async def request_retrieve_task(
+        self, task_id: str, skip_validation: bool = False, dataset: str | None = None
+    ) -> Response:
         """
         Requests retrieve task from benchmark service
         """
-        params = {"task_id": task_id, "skip_validation": str(skip_validation)}
+        params: dict[str, Any] = {"task_id": task_id, "skip_validation": str(skip_validation), "dataset": dataset}
         response = self._client.get("/retrieve-task/", params=params)
         logger.info(f"Retrieve task response: {response.text}")
         return response
 
-    async def request_setup_task(self, task_id: str, instance_id: str) -> AsyncGenerator[str | dict[str, Any], None]:
+    async def request_setup_task(
+        self, task_id: str, instance_id: str, dataset: str | None = None
+    ) -> AsyncGenerator[str | dict[str, Any], None]:
         """
         Requests setup task from benchmark service via WebSocket
         """
@@ -85,9 +98,10 @@ class BenchmarkServiceTestClient:
         if not api_key or not api_url or not target:
             raise ValueError("API key, API URL, and target are required")
 
-        json_data = {
+        json_data: dict[str, Any] = {
             "task_id": task_id,
             "instance_id": instance_id,
+            "dataset": dataset,
         }
 
         headers = {
@@ -108,7 +122,7 @@ class BenchmarkServiceTestClient:
                     break
 
     async def request_evaluate_instance(
-        self, task_id: str, instance_id: str
+        self, task_id: str, instance_id: str, dataset: str | None = None
     ) -> AsyncGenerator[str | dict[str, Any], None]:
         """
         Requests evaluate instance from benchmark service via WebSocket
@@ -120,9 +134,10 @@ class BenchmarkServiceTestClient:
         if not api_key or not api_url or not target:
             raise Exception("API key, API URL, and target are required")
 
-        json_data = {
+        json_data: dict[str, Any] = {
             "task_id": task_id,
             "instance_id": instance_id,
+            "dataset": dataset,
         }
 
         headers = {
@@ -142,11 +157,13 @@ class BenchmarkServiceTestClient:
                     logger.info("WebSocket closed for evaluate instance")
                     break
 
-    async def request_final_score(self, evaluation_results: Mapping[str, dict[str, Any] | None]) -> Response:
+    async def request_final_score(
+        self, evaluation_results: Mapping[str, dict[str, Any] | None], dataset: str | None = None
+    ) -> Response:
         """
         Requests final score from benchmark service
         """
-        json_data = {"evaluation_results": evaluation_results}
+        json_data: dict[str, Any] = {"evaluation_results": evaluation_results, "dataset": dataset}
         headers = {"Content-Type": "application/json"}
 
         response = self._client.post("/final-score", json=json_data, headers=headers)

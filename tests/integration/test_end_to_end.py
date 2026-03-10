@@ -1,4 +1,5 @@
 import os
+from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
@@ -31,9 +32,11 @@ def setup_script_path() -> Path:
 
 
 @pytest.fixture
-def test_client() -> BenchmarkServiceTestClient:
+def test_client() -> Generator[BenchmarkServiceTestClient]:
     """Create test client."""
-    return BenchmarkServiceTestClient()
+    c = BenchmarkServiceTestClient()
+    yield c
+    c.close()
 
 
 class TestEndToEnd:
@@ -119,7 +122,7 @@ class TestEndToEnd:
         assert response.status_code == 200
         data = response.json()
         assert task_ids[0].replace("__", "_1776_") in data["docker_image"]
-        assert len(data["problem_statement"]) > 0
+        assert data["problem_path"]
 
         # Final score
         mock_results = {tid: {"resolved": True} for tid in task_ids}

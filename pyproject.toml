@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 
 dependencies = [
     "create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@main",
+    "daytona>=0.144.0",
     "datasets>=4.4.2",
     "swebench==4.1.0",
     "pandas<3.0.0",

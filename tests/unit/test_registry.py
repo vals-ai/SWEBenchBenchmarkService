@@ -60,13 +60,12 @@ class TestRegistry:
         """Verify all Docker images exist in registry (SLOW)."""
         from swebench_service.benchmark_service import SWEBenchService
 
-        service = SWEBenchService()
-        task_ids = list(service.tasks.keys())
+        service = await SWEBenchService.create()
+        task_ids = list(service.get_dataset().keys())
 
         async def check_image(task_id: str) -> tuple[str, bool]:
             try:
-                response = service.retrieve_task(task_id, skip_validation=True)
-                # Basic validation - if retrieve_task succeeds, the task is valid
+                response = await service.retrieve_task(task_id, skip_validation=True)
                 assert response.docker_image
                 return task_id, True
             except Exception:
