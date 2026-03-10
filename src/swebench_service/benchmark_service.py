@@ -78,7 +78,7 @@ class SWEBenchService(BenchmarkService):
 
         # Write problem statement to sandbox
         problem_statement = task.get("problem_statement", "")
-        await sandbox.fs.upload_file(problem_statement.encode("utf-8"), PROBLEM_STATEMENT_PATH)
+        await sandbox.fs.upload_file(problem_statement.encode(), PROBLEM_STATEMENT_PATH)
         yield StreamMessageChunk(type="message", data="Uploaded problem statement")
 
         # Build setup script: base + repo-specific pre-install
@@ -88,7 +88,7 @@ class SWEBenchService(BenchmarkService):
             setup_script += "\n" + "\n".join(pre_install)
 
         # Upload setup script
-        await sandbox.fs.upload_file(setup_script.encode("utf-8"), "/setup.sh")
+        await sandbox.fs.upload_file(setup_script.encode(), "/setup.sh")
         yield StreamMessageChunk(type="message", data="Uploaded setup script")
 
         # Execute setup with streaming (ignore errors as some pre-install commands may fail)
@@ -118,7 +118,7 @@ class SWEBenchService(BenchmarkService):
         # Create and upload evaluation script
         test_spec = make_test_spec(task)
         eval_script = create_evaluation_script(test_spec, task_id)
-        await sandbox.fs.upload_file(eval_script.encode("utf-8"), "/root/eval.sh")
+        await sandbox.fs.upload_file(eval_script.encode(), "/root/eval.sh")
         yield StreamMessageChunk(type="message", data="Uploaded evaluation script")
 
         # Execute tests with streaming
