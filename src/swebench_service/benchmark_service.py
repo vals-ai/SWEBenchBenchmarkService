@@ -36,10 +36,6 @@ PROBLEM_STATEMENT_PATH = "/tmp/problem_statement.txt"
 class SWEBenchService(BenchmarkService):
     """SWE-bench benchmark implementation."""
 
-    async def check_auth(self, headers: dict[str, str]) -> bool:
-        """SWE-bench dataset does not require authentication so always return True."""
-        return True
-
     async def load_datasets(self) -> dict[str, dict[str, Any]]:
         """Load SWE-bench_Verified dataset from disk."""
         if not DISK_PATH.exists():
