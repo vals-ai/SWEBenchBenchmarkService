@@ -2278,7 +2278,6 @@ source = { editable = "." }
 dependencies = [
     { name = "create-benchmark-service" },
     { name = "datasets" },
-    { name = "daytona" },
     { name = "pandas" },
     { name = "swebench" },
 ]
@@ -2296,7 +2295,6 @@ dev = [
 requires-dist = [
     { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=main" },
     { name = "datasets", specifier = ">=4.4.2" },
-    { name = "daytona", specifier = ">=0.144.0" },
     { name = "pandas", specifier = "<3.0.0" },
     { name = "swebench", specifier = "==4.1.0" },
 ]
