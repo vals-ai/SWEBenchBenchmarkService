@@ -1,3 +1,5 @@
+from collections.abc import Generator
+
 import pytest
 
 from swebench_service import load_dataset_from_disk
@@ -6,8 +8,10 @@ from tests.utils import BenchmarkServiceTestClient
 
 class TestEndpoints:
     @pytest.fixture
-    def client(self) -> BenchmarkServiceTestClient:
-        return BenchmarkServiceTestClient()
+    def client(self) -> Generator[BenchmarkServiceTestClient]:
+        c = BenchmarkServiceTestClient()
+        yield c
+        c.close()
 
     async def test_health_check(self, client: BenchmarkServiceTestClient) -> None:
         """Test /health endpoint."""
@@ -28,7 +32,7 @@ class TestEndpoints:
     async def test_verify_task_ids_invalid(self, client: BenchmarkServiceTestClient) -> None:
         """Test /verify-task-ids with invalid task ID."""
         response = await client.request_verify_task_ids(["invalid-task-id"])
-        assert response.status_code == 500  # Should fail validation
+        assert response.status_code == 400
 
     async def test_verify_task_ids_all(self, client: BenchmarkServiceTestClient) -> None:
         """Test /verify-task-ids without task_ids parameter returns all tasks."""
@@ -105,11 +109,8 @@ class TestEndpoints:
         id_docker_compatible = task_id.replace("__", "_1776_")
         assert data["docker_image"] == f"swebench/sweb.eval.x86_64.{id_docker_compatible}:latest"
 
-        assert "problem_statement" in data
-        assert len(data["problem_statement"]) > 0
-
-        assert "request_setup" in data
-        assert data["request_setup"] is True
+        assert "problem_path" in data
+        assert data["problem_path"]
 
         assert "cwd" in data
         assert data["cwd"] == "/testbed"
@@ -122,7 +123,7 @@ class TestEndpoints:
     async def test_retrieve_task_invalid(self, client: BenchmarkServiceTestClient) -> None:
         """Test /retrieve-task/ with invalid task ID."""
         response = await client.request_retrieve_task("invalid-task-id")
-        assert response.status_code == 500
+        assert response.status_code == 400
 
     async def test_retrieve_task_multiple(self, client: BenchmarkServiceTestClient) -> None:
         """Test /retrieve-task/ with multiple different tasks."""
@@ -134,7 +135,7 @@ class TestEndpoints:
 
             data = response.json()
             assert task_id.replace("__", "_1776_") in data["docker_image"]
-            assert len(data["problem_statement"]) > 0
+            assert data["problem_path"]
 
     async def test_final_score(self, client: BenchmarkServiceTestClient) -> None:
         """Test /final-score endpoint."""

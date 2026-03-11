@@ -30,26 +30,28 @@ from swebench_service import (
 
 logger = logging.getLogger(__name__)
 
+PROBLEM_STATEMENT_PATH = "/tmp/problem_statement.txt"
+
 
 class SWEBenchService(BenchmarkService):
     """SWE-bench benchmark implementation."""
 
-    def load_dataset(self) -> dict[str, Any]:
+    async def load_datasets(self) -> dict[str, dict[str, Any]]:
         """Load SWE-bench_Verified dataset from disk."""
         if not DISK_PATH.exists():
             raise FileNotFoundError(f"Dataset not found at {DISK_PATH}. Run 'make setup' first.")
 
-        return load_dataset_from_disk()
+        return {"default": load_dataset_from_disk()}
 
-    def retrieve_task(self, task_id: str, skip_validation: bool = False) -> RetrieveTaskResponse:
+    async def retrieve_task(
+        self, task_id: str, skip_validation: bool = False, dataset: str | None = None
+    ) -> RetrieveTaskResponse:
         """Retrieve task metadata for SWE-bench task."""
         if not skip_validation:
-            self.validate_task_ids([task_id])
+            await self.validate_task_ids([task_id], dataset=dataset)
 
-        task = self.tasks[task_id]
         id_docker_compatible = task_id.replace("__", "_1776_")
         docker_image = f"swebench/sweb.eval.x86_64.{id_docker_compatible}:latest"
-        problem_statement = task.get("problem_statement", "")
 
         # Default: 2 vCPU, 4GB memory
         resources = Resources(vcpu=2, memory=4, disk=10)
@@ -61,16 +63,23 @@ class SWEBenchService(BenchmarkService):
 
         return RetrieveTaskResponse(
             docker_image=docker_image,
-            problem_statement=problem_statement,
-            request_setup=True,
+            problem_path=PROBLEM_STATEMENT_PATH,
             cwd="/testbed",
             resources=resources,
         )
 
-    async def setup_task(self, task_id: str, sandbox: AsyncSandbox) -> AsyncGenerator[StreamChunk, None]:
+    async def setup_task(
+        self, task_id: str, sandbox: AsyncSandbox, dataset: str | None = None
+    ) -> AsyncGenerator[StreamChunk, None]:
         """Setup SWE-bench task environment in sandbox."""
-        task = self.tasks[task_id]
+        ds = self.get_dataset(dataset)
+        task = ds[task_id]
         base_commit = task["base_commit"]
+
+        # Write problem statement to sandbox
+        problem_statement = task.get("problem_statement", "")
+        await sandbox.fs.upload_file(problem_statement.encode(), PROBLEM_STATEMENT_PATH)
+        yield StreamMessageChunk(type="message", data="Uploaded problem statement")
 
         # Build setup script: base + repo-specific pre-install
         setup_script = Path("setup.sh").read_text()
@@ -79,7 +88,7 @@ class SWEBenchService(BenchmarkService):
             setup_script += "\n" + "\n".join(pre_install)
 
         # Upload setup script
-        await sandbox.fs.upload_file(setup_script.encode("utf-8"), "/setup.sh")
+        await sandbox.fs.upload_file(setup_script.encode(), "/setup.sh")
         yield StreamMessageChunk(type="message", data="Uploaded setup script")
 
         # Execute setup with streaming (ignore errors as some pre-install commands may fail)
@@ -90,14 +99,16 @@ class SWEBenchService(BenchmarkService):
 
         yield StreamResultChunk(type="result", data={"status": "ok"})
 
-    def evaluate_response(self, request: EvaluateResponseRequest) -> Any:
+    async def evaluate_response(self, request: EvaluateResponseRequest, dataset: str | None = None) -> Any:
         """SWE-bench requires sandbox evaluation."""
         raise NotImplementedError("SWE-bench evaluation requires sandbox. Use /ws/evaluate-instance endpoint.")
 
-    async def evaluate_instance(self, task_id: str, sandbox: AsyncSandbox) -> AsyncGenerator[StreamChunk, None]:
+    async def evaluate_instance(
+        self, task_id: str, sandbox: AsyncSandbox, dataset: str | None = None
+    ) -> AsyncGenerator[StreamChunk, None]:
         """Evaluate SWE-bench solution in sandbox."""
-        self.validate_task_ids([task_id])
-        task = self.tasks[task_id]
+        await self.validate_task_ids([task_id], dataset=dataset)
+        task = self.get_dataset(dataset)[task_id]
 
         # Get agent's prediction (git diff)
         yield StreamMessageChunk(type="message", data="Capturing agent's changes...")
@@ -107,7 +118,7 @@ class SWEBenchService(BenchmarkService):
         # Create and upload evaluation script
         test_spec = make_test_spec(task)
         eval_script = create_evaluation_script(test_spec, task_id)
-        await sandbox.fs.upload_file(eval_script.encode("utf-8"), "/root/eval.sh")
+        await sandbox.fs.upload_file(eval_script.encode(), "/root/eval.sh")
         yield StreamMessageChunk(type="message", data="Uploaded evaluation script")
 
         # Execute tests with streaming
@@ -124,7 +135,9 @@ class SWEBenchService(BenchmarkService):
 
         yield StreamResultChunk(type="result", data=evaluation_result.model_dump())
 
-    def calculate_final_score(self, evaluation_results: dict[str, Any]) -> FinalScoreResult:
+    async def calculate_final_score(
+        self, evaluation_results: dict[str, Any], dataset: str | None = None
+    ) -> FinalScoreResult:
         """Calculate final score as percentage of resolved tasks."""
         total = len(evaluation_results)
 
