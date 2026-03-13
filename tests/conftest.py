@@ -16,6 +16,7 @@ def setup_dataset(tmp_path_factory: TempPathFactory, monkeypatch: MonkeyPatch) -
 
     # Update monkeypatch paths for new structure
     monkeypatch.setattr("swebench_service.dataset.DISK_PATH", task_directory)
+    monkeypatch.setattr("swebench_service.benchmark_service.DISK_PATH", task_directory)
 
     from swebench_service.dataset import setup_dataset
 

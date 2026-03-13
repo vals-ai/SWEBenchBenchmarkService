@@ -65,6 +65,7 @@ class SWEBenchService(BenchmarkService):
             docker_image=docker_image,
             problem_path=PROBLEM_STATEMENT_PATH,
             cwd="/testbed",
+            agent_timeout=None,
             resources=resources,
         )
 

@@ -115,6 +115,9 @@ class TestEndpoints:
         assert "cwd" in data
         assert data["cwd"] == "/testbed"
 
+        assert "agent_timeout" in data
+        assert data["agent_timeout"] is None
+
         assert "resources" in data
         assert data["resources"]["vcpu"] >= 2
         assert data["resources"]["memory"] >= 4
