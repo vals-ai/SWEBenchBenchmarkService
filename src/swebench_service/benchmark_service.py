@@ -26,6 +26,7 @@ from swebench_service import (
     get_pre_install_commands,
     grade_test_output,
     load_dataset_from_disk,
+    load_vals_index_subset,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,10 @@ class SWEBenchService(BenchmarkService):
         if not DISK_PATH.exists():
             raise FileNotFoundError(f"Dataset not found at {DISK_PATH}. Run 'make setup' first.")
 
-        return {"default": load_dataset_from_disk()}
+        return {
+            "default": load_dataset_from_disk(),
+            "vals_index": load_vals_index_subset(),
+        }
 
     async def retrieve_task(
         self, task_id: str, skip_validation: bool = False, dataset: str | None = None
