@@ -70,6 +70,9 @@ Each instance contains:
 - `patch`: Gold solution patch (for reference)
 - `repo`, `version`: Repository and version information
 
+### Vals Index Subset
+The Vals Index subset can be fetched by passing in `dataset=vals_index` in the [/verify-task-ids](#verify-task-ids) endpoint
+
 ## Docker Images
 
 Each task uses a pre-built Docker image with the repository and dependencies:
