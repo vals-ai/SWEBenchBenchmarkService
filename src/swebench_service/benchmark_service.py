@@ -1,5 +1,6 @@
 """SWE-bench benchmark service implementation."""
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -126,14 +127,32 @@ class SWEBenchService(BenchmarkService):
         await sandbox.fs.upload_file(eval_script.encode(), "/root/eval.sh")
         yield StreamMessageChunk(type="message", data="Uploaded evaluation script")
 
-        # Execute tests with streaming
+        # Execute tests with streaming, with a watchdog that alerts if no output for 5 min
         run_command = create_run_command(task_id)
         test_output: list[str] = []
+        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        debug_msg = "[Debug]: No logs have been produced in the last 5 minutes, evaluation may be stuck"
+
+        async def _stream():
+            async for line in stream_command(sandbox, run_command, cwd="/testbed", ignore_error=True):
+                await queue.put(line)
+            await queue.put(None)
 
         yield StreamMessageChunk(type="message", data="Running tests...")
-        async for line in stream_command(sandbox, run_command, cwd="/testbed", ignore_error=True):
-            yield StreamMessageChunk(type="message", data=line)
-            test_output.append(line)
+        task = asyncio.create_task(_stream())
+        try:
+            while True:
+                try:
+                    line = await asyncio.wait_for(queue.get(), timeout=300)
+                except asyncio.TimeoutError:
+                    yield StreamMessageChunk(type="message", data=debug_msg)
+                    continue
+                if line is None:
+                    break
+                test_output.append(line)
+                yield StreamMessageChunk(type="message", data=line)
+        finally:
+            task.cancel()
 
         # Grade results
         evaluation_result = grade_test_output("".join(test_output), test_spec, prediction)
