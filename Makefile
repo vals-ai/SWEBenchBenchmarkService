@@ -19,9 +19,8 @@ install: ## Install dependencies
 setup: ## Download SWE-bench dataset
 	uv run python -m swebench_service.dataset
 
-benchmark-service:  ## Start benchmark service via docker compose
-	docker compose down --volumes
-	docker compose up --build
+benchmark-service:  ## Start benchmark service
+	make docker-build && make docker-run
 
 dev: venv_check  ## Start the development server
 	uv run fastapi dev main.py --port 0
