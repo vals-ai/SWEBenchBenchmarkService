@@ -9,6 +9,7 @@ dependencies = [
     "datasets>=4.4.2",
     "swebench==4.1.0",
     "pandas<3.0.0",
+    "tenacity>=9.1.4",
 ]
 
 [dependency-groups]
