@@ -17,5 +17,8 @@ async def with_retry(sandbox: AsyncSandbox, fn: Callable[..., Any]) -> Any:
     try:
         return await _attempt()
     except DaytonaError as e:
-        await sandbox.refresh_data()
+        try:
+            await sandbox.refresh_data()
+        except Exception:
+            pass
         raise DaytonaError(f"{e} | sandbox={sandbox.name} state={sandbox.state}") from e
