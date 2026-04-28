@@ -1,0 +1,12 @@
+name: update-lockfile
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+jobs:
+  update:
+    uses: vals-ai/.github/.github/workflows/update-lockfile.yaml@main
+    secrets:
+      GH_PAT: ${{ secrets.GH_PAT }}
