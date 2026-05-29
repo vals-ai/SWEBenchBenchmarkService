@@ -35,6 +35,64 @@ logger = logging.getLogger(__name__)
 
 PROBLEM_STATEMENT_PATH = "/tmp/problem_statement.txt"
 
+SCORE_TYPES: dict[str, dict[str, str]] = {
+    "score": {
+        "unit": "percent",
+        "description": "Percentage of SWE-bench tasks resolved successfully.",
+    }
+}
+
+
+def _vals_format_population(*, score: float, resolved_tasks: list[str], unresolved_tasks: list[str]) -> dict[str, Any]:
+    by_status: dict[str, int] = {}
+    if resolved_tasks:
+        by_status["resolved"] = len(resolved_tasks)
+    if unresolved_tasks:
+        by_status["unresolved"] = len(unresolved_tasks)
+    return {
+        "scores": {"score": {"value": score, "stderr": None}},
+        "counts": {"total": len(resolved_tasks) + len(unresolved_tasks), "by_status": by_status, "extra": {}},
+        "aggregated_metrics": {
+            "total": {
+                "extra": {
+                    "resolved_tasks": resolved_tasks,
+                    "unresolved_tasks": unresolved_tasks,
+                }
+            },
+            "average_per_task": {},
+        },
+        "extra": {},
+    }
+
+
+def _population_score(resolved_tasks: list[str], unresolved_tasks: list[str]) -> float:
+    total = len(resolved_tasks) + len(unresolved_tasks)
+    return round((len(resolved_tasks) / total) * 100, 6) if total > 0 else 0.0
+
+
+def _vals_format_task(*, task_id: str, resolved: bool) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "status": "resolved" if resolved else "unresolved",
+        "scores": {"score": {"value": 100.0 if resolved else 0.0, "stderr": None}},
+        "aggregated_metrics": {"metadata": {"resolved": resolved}, "tool_usage": {}, "extra": {}},
+        "extra": {},
+    }
+
+
+def _vals_index_selection(task_ids: list[str]) -> dict[str, Any]:
+    return {
+        "type": "dataset_subset",
+        "criteria": {
+            "task_ids": task_ids,
+            "categories": [],
+            "tags": ["vals_index"],
+            "operators": [],
+            "extra": {"dataset": "vals_index"},
+        },
+        "extra": {},
+    }
+
 
 class SWEBenchService(BenchmarkService):
     """SWE-bench benchmark implementation."""
@@ -168,7 +226,11 @@ class SWEBenchService(BenchmarkService):
                 finally:
                     await queue.put(None)
 
-            msg = "Running tests..." if attempt == 0 else f"Stream interrupted, retrying (attempt {attempt + 1}/{MAX_RETRIES})..."
+            msg = (
+                "Running tests..."
+                if attempt == 0
+                else f"Stream interrupted, retrying (attempt {attempt + 1}/{MAX_RETRIES})..."
+            )
             yield StreamMessageChunk(type="message", data=msg)
             stream_task = asyncio.create_task(_stream())
             try:
@@ -204,19 +266,78 @@ class SWEBenchService(BenchmarkService):
 
         resolved_tasks: list[str] = []
         unresolved_tasks: list[str] = []
+        vals_format_tasks: list[dict[str, Any]] = []
 
         for task_id, result in evaluation_results.items():
-            if result and result.get("resolved", False):
+            resolved_task = bool(result and result.get("resolved", False))
+            if resolved_task:
                 resolved_tasks.append(task_id)
             else:
                 unresolved_tasks.append(task_id)
+            vals_format_tasks.append(_vals_format_task(task_id=task_id, resolved=resolved_task))
 
         resolved = len(resolved_tasks)
         score = round((resolved / total) * 100, 6) if total > 0 else 0.0
 
+        vals_index_dataset = load_vals_index_subset()
+        default_dataset = load_dataset_from_disk()
+        active_dataset = vals_index_dataset if dataset == "vals_index" else default_dataset
+        unknown_task_ids = set(evaluation_results) - set(active_dataset)
+        if unknown_task_ids:
+            raise ValueError(
+                f"Unknown SWE-bench task IDs for dataset {dataset or 'default'}: {sorted(unknown_task_ids)}"
+            )
+
+        vals_index_task_ids = set(vals_index_dataset)
+        vals_index_task_order = (
+            list(vals_index_dataset)
+            if dataset == "vals_index"
+            else [task_id for task_id in default_dataset if task_id in vals_index_task_ids]
+        )
+        submitted_vals_index_task_ids = [task_id for task_id in vals_index_task_order if task_id in evaluation_results]
+        primary_population = (
+            "vals_index"
+            if dataset == "vals_index" or (bool(vals_index_task_ids) and set(evaluation_results) == vals_index_task_ids)
+            else "full"
+        )
+        results: dict[str, Any] = {}
+
+        if primary_population == "full":
+            results["full"] = _vals_format_population(
+                score=score,
+                resolved_tasks=resolved_tasks,
+                unresolved_tasks=unresolved_tasks,
+            )
+            if submitted_vals_index_task_ids:
+                vals_index_resolved = [
+                    task_id for task_id in submitted_vals_index_task_ids if task_id in resolved_tasks
+                ]
+                vals_index_unresolved = [
+                    task_id for task_id in submitted_vals_index_task_ids if task_id in unresolved_tasks
+                ]
+                vals_index_population = _vals_format_population(
+                    score=_population_score(vals_index_resolved, vals_index_unresolved),
+                    resolved_tasks=vals_index_resolved,
+                    unresolved_tasks=vals_index_unresolved,
+                )
+                vals_index_population["selection"] = _vals_index_selection(submitted_vals_index_task_ids)
+                results["vals_index"] = vals_index_population
+        else:
+            vals_index_population = _vals_format_population(
+                score=score,
+                resolved_tasks=resolved_tasks,
+                unresolved_tasks=unresolved_tasks,
+            )
+            vals_index_population["selection"] = _vals_index_selection(submitted_vals_index_task_ids)
+            results["vals_index"] = vals_index_population
+
         metadata = {
             "resolved_tasks": resolved_tasks,
             "unresolved_tasks": unresolved_tasks,
+            "score_types": SCORE_TYPES,
+            "results": results,
+            "primary_population": primary_population,
+            "tasks": vals_format_tasks,
         }
 
         return FinalScoreResult(score=score, metadata=metadata)

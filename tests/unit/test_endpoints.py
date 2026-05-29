@@ -2,7 +2,7 @@ from collections.abc import Generator
 
 import pytest
 
-from swebench_service import load_dataset_from_disk
+from swebench_service import load_dataset_from_disk, load_vals_index_subset
 from tests.utils import BenchmarkServiceTestClient
 
 
@@ -167,6 +167,131 @@ class TestEndpoints:
         assert "unresolved_tasks" in data["metadata"]
         assert len(data["metadata"]["resolved_tasks"]) == 2
         assert len(data["metadata"]["unresolved_tasks"]) == 1
+        tasks = data["metadata"]["tasks"]
+        assert [task["task_id"] for task in tasks] == task_ids
+        assert [task["status"] for task in tasks] == ["resolved", "unresolved", "resolved"]
+        assert [task["scores"]["score"]["value"] for task in tasks] == [100.0, 0.0, 100.0]
+        assert [task["aggregated_metrics"]["metadata"]["resolved"] for task in tasks] == [True, False, True]
+
+    async def test_final_score_vals_index_dataset_scores_index_only_run(
+        self, client: BenchmarkServiceTestClient
+    ) -> None:
+        """Test /final-score scores an index-only run from submitted task outcomes."""
+        dataset = load_vals_index_subset()
+        task_ids = list(dataset.keys())[:2]
+
+        evaluation_results = {
+            task_ids[0]: {"resolved": True},
+            task_ids[1]: {"resolved": False},
+        }
+
+        response = await client.request_final_score(evaluation_results, dataset="vals_index")
+        assert response.status_code == 200
+
+        data = response.json()
+        assert data["final_score"] == 50.0
+
+    async def test_final_score_vals_index_dataset_rejects_non_index_task(
+        self, client: BenchmarkServiceTestClient
+    ) -> None:
+        """Test /final-score rejects submitted tasks outside the active vals_index dataset."""
+        full_dataset = load_dataset_from_disk()
+        vals_index_dataset = load_vals_index_subset()
+        vals_index_task_ids = list(vals_index_dataset)
+        non_vals_task_id = next(task_id for task_id in full_dataset if task_id not in vals_index_dataset)
+
+        response = await client.request_final_score(
+            {
+                vals_index_task_ids[0]: {"resolved": True},
+                non_vals_task_id: {"resolved": True},
+            },
+            dataset="vals_index",
+        )
+
+        assert response.status_code == 400
+
+    async def test_final_score_full_run_embeds_submitted_vals_index_intersection(
+        self, client: BenchmarkServiceTestClient
+    ) -> None:
+        """Test /final-score embeds only submitted vals_index tasks for a mixed full run."""
+        full_dataset = load_dataset_from_disk()
+        vals_index_dataset = load_vals_index_subset()
+        vals_index_task_ids = [task_id for task_id in full_dataset if task_id in vals_index_dataset]
+        non_vals_task_ids = [task_id for task_id in full_dataset if task_id not in vals_index_dataset]
+
+        assert vals_index_task_ids
+        assert non_vals_task_ids
+
+        evaluation_results = {
+            vals_index_task_ids[0]: {"resolved": False},
+            non_vals_task_ids[0]: {"resolved": True},
+        }
+
+        response = await client.request_final_score(evaluation_results)
+        assert response.status_code == 200
+
+        data = response.json()
+        vals_index_population = data["metadata"]["results"]["vals_index"]
+        assert vals_index_population["scores"]["score"]["value"] == 0.0
+        assert vals_index_population["counts"]["total"] == 1
+        assert vals_index_population["counts"]["by_status"] == {"unresolved": 1}
+        assert vals_index_population["selection"]["criteria"]["task_ids"] == [vals_index_task_ids[0]]
+        assert vals_index_population["aggregated_metrics"]["total"]["extra"] == {
+            "resolved_tasks": [],
+            "unresolved_tasks": [vals_index_task_ids[0]],
+        }
+
+    async def test_final_score_full_run_embeds_vals_index_population(self, client: BenchmarkServiceTestClient) -> None:
+        """Test /final-score keeps full primary while embedding vals_index for a full run."""
+        full_dataset = load_dataset_from_disk()
+        vals_index_dataset = load_vals_index_subset()
+        vals_index_task_ids = [task_id for task_id in full_dataset if task_id in vals_index_dataset]
+        non_vals_task_ids = [task_id for task_id in full_dataset if task_id not in vals_index_dataset]
+
+        assert vals_index_task_ids
+        assert non_vals_task_ids
+
+        vals_index_resolved_tasks = [task_id for index, task_id in enumerate(vals_index_task_ids) if index % 2 == 0]
+        vals_index_unresolved_tasks = [task_id for index, task_id in enumerate(vals_index_task_ids) if index % 2 == 1]
+        evaluation_results = {task_id: {"resolved": True} for task_id in vals_index_resolved_tasks}
+        evaluation_results.update({task_id: {"resolved": False} for task_id in vals_index_unresolved_tasks})
+        evaluation_results[non_vals_task_ids[0]] = {"resolved": True}
+
+        response = await client.request_final_score(evaluation_results)
+        assert response.status_code == 200
+
+        data = response.json()
+        full_resolved_tasks = [*vals_index_resolved_tasks, non_vals_task_ids[0]]
+        full_unresolved_tasks = vals_index_unresolved_tasks
+
+        full_population = data["metadata"]["results"]["full"]
+        assert full_population["scores"]["score"]["value"] == pytest.approx(  # type: ignore[reportUnknownMemberType]
+            round((len(full_resolved_tasks) / len(evaluation_results)) * 100, 6), rel=1e-5
+        )
+        assert full_population["counts"]["total"] == len(evaluation_results)
+        assert full_population["counts"]["by_status"] == {
+            "resolved": len(full_resolved_tasks),
+            "unresolved": len(full_unresolved_tasks),
+        }
+        assert full_population["aggregated_metrics"]["total"]["extra"] == {
+            "resolved_tasks": full_resolved_tasks,
+            "unresolved_tasks": full_unresolved_tasks,
+        }
+
+        vals_index_population = data["metadata"]["results"]["vals_index"]
+        assert vals_index_population["scores"]["score"]["value"] == pytest.approx(  # type: ignore[reportUnknownMemberType]
+            round((len(vals_index_resolved_tasks) / len(vals_index_task_ids)) * 100, 6), rel=1e-5
+        )
+        assert vals_index_population["counts"]["total"] == len(vals_index_task_ids)
+        assert vals_index_population["counts"]["by_status"] == {
+            "resolved": len(vals_index_resolved_tasks),
+            "unresolved": len(vals_index_unresolved_tasks),
+        }
+        assert vals_index_population["aggregated_metrics"]["total"]["extra"] == {
+            "resolved_tasks": vals_index_resolved_tasks,
+            "unresolved_tasks": vals_index_unresolved_tasks,
+        }
+        assert vals_index_population["selection"]["criteria"]["task_ids"] == vals_index_task_ids
 
     async def test_final_score_all_resolved(self, client: BenchmarkServiceTestClient) -> None:
         """Test /final-score with all tasks resolved."""
