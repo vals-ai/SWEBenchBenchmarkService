@@ -1,12 +1,13 @@
-import asyncio
+# Starlette 1.2+ type-checks TestClient against the optional `httpx2` package, which is
+# not installed here, so members of TestClient resolve to Unknown under basedpyright.
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false
 import json
 import logging
 import os
-from asyncio import Task
 from collections.abc import AsyncGenerator, Mapping
 from typing import Any
 
-from daytona import AsyncSandbox, ExecuteResponse
+from benchmark_service import ExecResult, Sandbox
 from fastapi.testclient import TestClient
 from httpx import Response
 from starlette.testclient import WebSocketTestSession
@@ -171,30 +172,7 @@ class BenchmarkServiceTestClient:
         return response
 
 
-async def get_session_logger(sandbox: AsyncSandbox, session_id: str, cmd_id: str, logger: logging.Logger) -> Task[None]:
-    """Creates a new task that will log the stdout and stderr of the command to the logger"""
-
-    def log_stdout(stdout: str) -> None:
-        if stdout.strip():
-            logger.debug(f"[STDOUT]: {stdout.rstrip()}")
-
-    def log_stderr(stderr: str) -> None:
-        if stderr.strip():
-            logger.error(f"[STDERR]: {stderr.rstrip()}")
-
-    log_task = asyncio.create_task(
-        sandbox.process.get_session_command_logs_async(
-            session_id,
-            cmd_id,
-            log_stdout,
-            log_stderr,
-        )
-    )
-
-    return log_task
-
-
-async def apply_patch(sandbox: AsyncSandbox, patch_path: str) -> str:
+async def apply_patch(sandbox: Sandbox, patch_path: str) -> str:
     GIT_APPLY_CMDS = [
         "git apply --verbose",
         "git apply --verbose --reject",
@@ -202,14 +180,14 @@ async def apply_patch(sandbox: AsyncSandbox, patch_path: str) -> str:
     ]
 
     for git_apply_cmd in GIT_APPLY_CMDS:
-        result: ExecuteResponse = await sandbox.process.exec(
-            command=f"{git_apply_cmd} {patch_path}",
+        result: ExecResult = await sandbox.exec(
+            f"{git_apply_cmd} {patch_path}",
             cwd="/testbed",
         )
 
         if result.exit_code == 0:
-            return result.result
+            return result.stdout
         else:
-            logger.warning(f"Failed to apply patch command `{git_apply_cmd}`:{result.result}")
+            logger.warning(f"Failed to apply patch command `{git_apply_cmd}`:{result.stdout}")
 
     raise ValueError(f"Failed to apply patch `{patch_path}`")

@@ -1,26 +1,29 @@
 import os
-from collections.abc import Generator
+from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
 from typing import Any
 
 import pytest
-from daytona import AsyncDaytona, CreateSandboxFromImageParams, DaytonaConfig, Resources
+from benchmark_service import Resources, SandboxCreateRequest, SandboxProvider
+from benchmark_service.sandbox.types import DaytonaBackendConfig
 
 from swebench_service import load_dataset_from_disk
 from tests.utils import BenchmarkServiceTestClient, apply_patch
 
 
 @pytest.fixture
-async def daytona() -> AsyncDaytona:
-    """Create Daytona client from environment variables."""
+async def provider() -> AsyncGenerator[SandboxProvider, None]:
+    """Create sandbox provider from environment variables."""
     api_key = os.getenv("DAYTONA_API_KEY")
     api_url = os.getenv("DAYTONA_API_URL")
     target = os.getenv("DAYTONA_TARGET")
 
-    if not all([api_key, api_url, target]):
+    if not api_key or not api_url or not target:
         pytest.skip("Daytona credentials not configured")
 
-    return AsyncDaytona(config=DaytonaConfig(api_key=api_key, api_url=api_url, target=target))
+    config = DaytonaBackendConfig(api_key=api_key, api_url=api_url, target=target)
+    async with config.create_provider() as sandbox_provider:
+        yield sandbox_provider
 
 
 @pytest.fixture
@@ -40,7 +43,7 @@ def test_client() -> Generator[BenchmarkServiceTestClient]:
 
 
 class TestEndToEnd:
-    async def test_evaluate_instance(self, daytona: AsyncDaytona, test_client: BenchmarkServiceTestClient) -> None:
+    async def test_evaluate_instance(self, provider: SandboxProvider, test_client: BenchmarkServiceTestClient) -> None:
         """Test single task evaluation with patch."""
         task_id = "matplotlib__matplotlib-22865"
 
@@ -48,14 +51,17 @@ class TestEndToEnd:
         response = await test_client.request_retrieve_task(task_id)
         assert response.status_code == 200
         task_data = response.json()
-        docker_image = task_data["docker_image"]
 
         # Create sandbox
-        sandbox = await daytona.create(
-            CreateSandboxFromImageParams(
+        sandbox = await provider.create_sandbox(
+            SandboxCreateRequest(
+                source=task_data["source"],
+                resources=Resources(vcpu=2, memory=4, disk=10),
                 name=f"test-{task_id}",
-                image=docker_image,
-                resources=Resources(cpu=2, memory=4, disk=10),
+                labels={},
+                env_vars={},
+                auto_stop_interval=0,
+                create_timeout=600,
             )
         )
 
@@ -76,7 +82,7 @@ class TestEndToEnd:
             dataset = load_dataset_from_disk()
             patch_content = dataset[task_id]["patch"]
 
-            await sandbox.fs.upload_file(patch_content.encode(), "/tmp/patch.diff")
+            await sandbox.upload_file("/tmp/patch.diff", patch_content.encode())
             result = await apply_patch(sandbox, "/tmp/patch.diff")
             assert "Applied" in result or "already applied" in result.lower() or result.strip() != ""
 
@@ -101,7 +107,7 @@ class TestEndToEnd:
             assert isinstance(eval_result["resolved"], bool)
 
         finally:
-            await daytona.delete(sandbox)
+            await provider.delete_sandbox(sandbox.id)
 
     async def test_end_to_end_api_only(self, test_client: BenchmarkServiceTestClient) -> None:
         """Test complete API flow without sandbox."""
@@ -121,7 +127,8 @@ class TestEndToEnd:
         response = await test_client.request_retrieve_task(task_ids[0])
         assert response.status_code == 200
         data = response.json()
-        assert task_ids[0].replace("__", "_1776_") in data["docker_image"]
+        assert data["source"]["type"] == "image"
+        assert task_ids[0].replace("__", "_1776_") in data["source"]["image"]
         assert data["problem_path"]
 
         # Final score
@@ -134,7 +141,7 @@ class TestEndToEnd:
 
     @pytest.mark.experimental
     async def test_evaluate_multiple_instances(
-        self, daytona: AsyncDaytona, test_client: BenchmarkServiceTestClient
+        self, provider: SandboxProvider, test_client: BenchmarkServiceTestClient
     ) -> None:
         """Test evaluating multiple instances (SLOW)."""
         # Use a smaller subset for testing
@@ -147,14 +154,17 @@ class TestEndToEnd:
             response = await test_client.request_retrieve_task(task_id)
             assert response.status_code == 200
             task_data = response.json()
-            docker_image = task_data["docker_image"]
 
             # Create sandbox
-            sandbox = await daytona.create(
-                CreateSandboxFromImageParams(
+            sandbox = await provider.create_sandbox(
+                SandboxCreateRequest(
+                    source=task_data["source"],
+                    resources=Resources(vcpu=2, memory=4, disk=10),
                     name=f"test-{task_id}",
-                    image=docker_image,
-                    resources=Resources(cpu=2, memory=4, disk=10),
+                    labels={},
+                    env_vars={},
+                    auto_stop_interval=0,
+                    create_timeout=600,
                 )
             )
 
@@ -167,7 +177,7 @@ class TestEndToEnd:
                 # Apply patch
                 dataset = load_dataset_from_disk()
                 patch_content = dataset[task_id]["patch"]
-                await sandbox.fs.upload_file(patch_content.encode(), "/tmp/patch.diff")
+                await sandbox.upload_file("/tmp/patch.diff", patch_content.encode())
                 await apply_patch(sandbox, "/tmp/patch.diff")
 
                 # Evaluate
@@ -184,7 +194,7 @@ class TestEndToEnd:
             except Exception as e:
                 results.append({"task_id": task_id, "error": str(e)})
             finally:
-                await daytona.delete(sandbox)
+                await provider.delete_sandbox(sandbox.id)
 
         # Verify all tasks completed
         assert len(results) == len(test_task_ids)

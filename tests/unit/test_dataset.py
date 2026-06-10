@@ -18,9 +18,7 @@ class TestDatasets:
         c.close()
 
     @pytest.mark.parametrize("dataset,expected_size", EXPECTED_SIZES.items())
-    async def test_dataset_loading(
-        self, client: BenchmarkServiceTestClient, dataset: str, expected_size: int
-    ) -> None:
+    async def test_dataset_loading(self, client: BenchmarkServiceTestClient, dataset: str, expected_size: int) -> None:
         response = await client.request_verify_task_ids(dataset=dataset)
         assert response.status_code == 200
         task_ids = response.json()["task_ids"]
@@ -29,6 +27,6 @@ class TestDatasets:
         response = await client.request_retrieve_task(task_ids[0], dataset=dataset)
         assert response.status_code == 200
         data = response.json()
-        assert data["docker_image"]
+        assert data["source"]["image"]
         assert data["problem_path"]
         assert data["cwd"] == "/testbed"

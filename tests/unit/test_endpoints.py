@@ -105,9 +105,12 @@ class TestEndpoints:
         data = response.json()
 
         # Validate response structure
-        assert "docker_image" in data
         id_docker_compatible = task_id.replace("__", "_1776_")
-        assert data["docker_image"] == f"swebench/sweb.eval.x86_64.{id_docker_compatible}:latest"
+        expected_image = f"swebench/sweb.eval.x86_64.{id_docker_compatible}:latest"
+        assert data["source"] == {"type": "image", "image": expected_image}
+
+        # Legacy field preserved for older Valkyrie clients
+        assert data["docker_image"] == expected_image
 
         assert "problem_path" in data
         assert data["problem_path"]
@@ -137,7 +140,7 @@ class TestEndpoints:
             assert response.status_code == 200
 
             data = response.json()
-            assert task_id.replace("__", "_1776_") in data["docker_image"]
+            assert task_id.replace("__", "_1776_") in data["source"]["image"]
             assert data["problem_path"]
 
     async def test_final_score(self, client: BenchmarkServiceTestClient) -> None:
