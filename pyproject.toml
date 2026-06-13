@@ -5,7 +5,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 
 dependencies = [
-    "create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@v0.5.0",
+    "create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@v0.7.5",
     "datasets>=4.4.2",
     "swebench==4.1.0",
     "pandas<3.0.0",
