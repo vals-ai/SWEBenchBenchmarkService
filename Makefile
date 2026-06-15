@@ -37,7 +37,7 @@ typecheck: ## Type check code with basedpyright
 test: ## Run tests
 	uv run pytest
 
-test-experimental: ## Run experimental tests (slow, requires Daytona credentials)
+test-experimental: ## Run experimental tests (slow, requires sandbox provider config)
 	uv run pytest -m experimental -v
 
 docker-build: ## Build Docker image
