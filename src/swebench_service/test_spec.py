@@ -79,6 +79,6 @@ def create_run_command(task_id: str) -> str:
 
     # Increase recursion limit and run evaluation script
     run_command += " && python3 -c 'import sys; sys.setrecursionlimit(10000)'"
-    run_command += " && /bin/bash /root/eval.sh 2>&1"
+    run_command += " && GIT_PAGER=cat PAGER=cat LESS='-F -X' TERM=dumb /bin/bash /root/eval.sh 2>&1"
 
     return run_command
