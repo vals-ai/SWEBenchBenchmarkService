@@ -37,6 +37,10 @@ PROBLEM_STATEMENT_PATH = "/tmp/problem_statement.txt"
 COMMAND_QUIET_SECONDS = 300.0
 
 
+def watchdog_message(quiet_seconds: float) -> str:
+    return f"[Debug]: No logs have been produced in the last {quiet_seconds:g} seconds, evaluation may be stuck"
+
+
 class SWEBenchService(BenchmarkService):
     """SWE-bench benchmark implementation."""
 
@@ -80,10 +84,7 @@ class SWEBenchService(BenchmarkService):
                 try:
                     line = await asyncio.wait_for(output.get(), timeout=quiet_seconds)
                 except TimeoutError:
-                    yield (
-                        f"[Debug]: No logs have been produced in the last {quiet_seconds:g} seconds, "
-                        "evaluation may be stuck"
-                    )
+                    yield watchdog_message(quiet_seconds)
                     continue
                 if line is None:
                     break
@@ -195,7 +196,8 @@ class SWEBenchService(BenchmarkService):
             yield StreamMessageChunk(type="message", data=msg)
             try:
                 async for line in self.stream_command_with_watchdog(sandbox, run_command, cwd="/testbed"):
-                    test_output.append(line)
+                    if line != watchdog_message(COMMAND_QUIET_SECONDS):
+                        test_output.append(line)
                     yield StreamMessageChunk(type="message", data=line)
                 break
             except SandboxCommandError:
