@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncGenerator
 
 from benchmark_service.sandbox import ExecResult, Sandbox
@@ -39,6 +40,15 @@ class FakeSandbox(Sandbox):
         return self.uploads[remote_path]
 
 
+class QuietThenOutputSandbox(FakeSandbox):
+    async def command(
+        self, command: str, *, cwd: str | None = None, timeout: float | None = None
+    ) -> AsyncGenerator[str, None]:
+        self.commands.append((command, cwd))
+        await asyncio.sleep(0.02)
+        yield "command output"
+
+
 async def test_setup_task_uses_framework_sandbox_interface() -> None:
     """Setup must use the provider-neutral framework sandbox interface.
 
@@ -65,3 +75,29 @@ async def test_setup_task_uses_framework_sandbox_interface() -> None:
     assert "/setup.sh" in sandbox.uploads
     assert sandbox.commands == [("chmod +x /setup.sh && bash /setup.sh abc123", "/testbed")]
     assert [message.type for message in messages] == ["message", "message", "message", "result"]
+
+
+async def test_stream_command_emits_watchdog_when_sandbox_is_quiet() -> None:
+    """Quiet sandbox commands should still send heartbeat messages upstream.
+
+    Test cases:
+    - A watchdog message is emitted while the command stream is quiet.
+    - Real command output is still forwarded when it arrives.
+    """
+    service = SWEBenchService()
+    sandbox = QuietThenOutputSandbox()
+
+    messages = [
+        message
+        async for message in service.stream_command_with_watchdog(
+            sandbox,
+            "run-tests",
+            cwd="/testbed",
+            quiet_seconds=0.01,
+        )
+    ]
+
+    assert messages == [
+        "[Debug]: No logs have been produced in the last 0.01 seconds, evaluation may be stuck",
+        "command output",
+    ]

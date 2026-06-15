@@ -1,6 +1,7 @@
 """SWE-bench benchmark service implementation."""
 
 import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -33,6 +34,7 @@ from swebench_service.utils import with_retry
 logger = logging.getLogger(__name__)
 
 PROBLEM_STATEMENT_PATH = "/tmp/problem_statement.txt"
+COMMAND_QUIET_SECONDS = 300.0
 
 
 class SWEBenchService(BenchmarkService):
@@ -44,7 +46,7 @@ class SWEBenchService(BenchmarkService):
         """Stream command output with retry on transient sandbox errors."""
         for attempt in range(retries):
             try:
-                async for line in sandbox.command(command, cwd=cwd):
+                async for line in self.stream_command_with_watchdog(sandbox, command, cwd=cwd):
                     yield line
                 return
             except SandboxCommandError:
@@ -54,6 +56,44 @@ class SWEBenchService(BenchmarkService):
                     raise
                 await asyncio.sleep(2**attempt)
                 yield f"Stream interrupted, retrying (attempt {attempt + 2}/{retries})..."
+
+    async def stream_command_with_watchdog(
+        self,
+        sandbox: Sandbox,
+        command: str,
+        *,
+        cwd: str,
+        quiet_seconds: float = COMMAND_QUIET_SECONDS,
+    ) -> AsyncGenerator[str, None]:
+        output: asyncio.Queue[str | None] = asyncio.Queue()
+
+        async def stream_command() -> None:
+            try:
+                async for line in sandbox.command(command, cwd=cwd):
+                    await output.put(line)
+            finally:
+                await output.put(None)
+
+        stream_task = asyncio.create_task(stream_command())
+        try:
+            while True:
+                try:
+                    line = await asyncio.wait_for(output.get(), timeout=quiet_seconds)
+                except TimeoutError:
+                    yield (
+                        f"[Debug]: No logs have been produced in the last {quiet_seconds:g} seconds, "
+                        "evaluation may be stuck"
+                    )
+                    continue
+                if line is None:
+                    break
+                yield line
+            await stream_task
+        finally:
+            if not stream_task.done():
+                stream_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stream_task
 
     async def load_datasets(self) -> dict[str, dict[str, Any]]:
         """Load SWE-bench_Verified dataset from disk."""
@@ -154,7 +194,7 @@ class SWEBenchService(BenchmarkService):
             msg = "Running tests..." if attempt == 0 else f"Stream interrupted, retrying (attempt {attempt + 1}/{MAX_RETRIES})..."
             yield StreamMessageChunk(type="message", data=msg)
             try:
-                async for line in sandbox.command(run_command, cwd="/testbed"):
+                async for line in self.stream_command_with_watchdog(sandbox, run_command, cwd="/testbed"):
                     test_output.append(line)
                     yield StreamMessageChunk(type="message", data=line)
                 break
