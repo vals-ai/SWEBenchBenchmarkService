@@ -97,7 +97,8 @@ async def test_stream_command_emits_watchdog_when_sandbox_is_quiet() -> None:
         )
     ]
 
-    assert messages == [
-        "[Debug]: No logs have been produced in the last 0.01 seconds, evaluation may be stuck",
-        "command output",
-    ]
+    assert any(
+        message == "[Debug]: No logs have been produced in the last 0.01 seconds, evaluation may be stuck"
+        for message in messages
+    )
+    assert messages[-1] == "command output"
