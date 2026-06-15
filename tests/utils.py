@@ -4,12 +4,12 @@ import logging
 import os
 from asyncio import Task
 from collections.abc import AsyncGenerator, Mapping
-from typing import Any
+from types import TracebackType
+from typing import Any, Protocol, cast
 
 from daytona import AsyncSandbox, ExecuteResponse
-from fastapi.testclient import TestClient
 from httpx import Response
-from starlette.testclient import WebSocketTestSession
+from starlette.testclient import TestClient, WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
 from main import app
@@ -17,24 +17,45 @@ from main import app
 logger = logging.getLogger(__name__)
 
 
+class TestClientProtocol(Protocol):
+    def __enter__(self) -> "TestClientProtocol": ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+
+    def get(self, url: str, *, params: Mapping[str, Any] | None = None) -> Response: ...
+
+    def post(self, url: str, *, json: Any = None, headers: Mapping[str, str] | None = None) -> Response: ...
+
+    def websocket_connect(self, url: str, *, headers: Mapping[str, str] | None = None) -> WebSocketTestSession: ...
+
+
 class BenchmarkServiceTestClient:
     """
     Contains utilities for testing the benchmark service
     """
 
-    _client: TestClient
+    _client: TestClientProtocol
 
     def __init__(self) -> None:
-        self._client = TestClient(app, raise_server_exceptions=False)
+        self._client = cast(TestClientProtocol, TestClient(app, raise_server_exceptions=False))
         self._client.__enter__()
 
     def close(self) -> None:
         self._client.__exit__(None, None, None)
 
     def _receive_websocket_message(self, websocket: WebSocketTestSession) -> str | dict[str, Any]:
-        message: dict[str, Any] = websocket.receive_json()
+        raw_message = websocket.receive_json()
+        if not isinstance(raw_message, dict):
+            raise ValueError("WebSocket message must be a JSON object")
+
+        message = cast(dict[str, Any], raw_message)
         if message["type"] == "message":
-            return message["data"]
+            return cast(str, message["data"])
 
         if message["type"] == "result":
             data = message["data"]
