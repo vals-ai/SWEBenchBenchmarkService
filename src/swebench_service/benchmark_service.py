@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmark_service import BenchmarkService
-from benchmark_service.sandbox import ImageSource, Sandbox, SandboxError
+from benchmark_service.sandbox import ImageSource, Sandbox, SandboxCommandError, SandboxError
 from benchmark_service.schemas import (
     EvaluateResponseRequest,
     FinalScoreResult,
@@ -17,7 +17,6 @@ from benchmark_service.schemas import (
     StreamMessageChunk,
     StreamResultChunk,
 )
-from benchmark_service.utils import stream_command
 from swebench.harness.test_spec.test_spec import make_test_spec
 
 from swebench_service import (
@@ -45,8 +44,10 @@ class SWEBenchService(BenchmarkService):
         """Stream command output with retry on transient sandbox errors."""
         for attempt in range(retries):
             try:
-                async for line in stream_command(sandbox, command, cwd, ignore_error=True):
+                async for line in sandbox.command(command, cwd=cwd):
                     yield line
+                return
+            except SandboxCommandError:
                 return
             except (SandboxError, RuntimeError):
                 if attempt == retries - 1:
@@ -143,50 +144,25 @@ class SWEBenchService(BenchmarkService):
         await with_retry(sandbox, lambda: sandbox.upload_file("/root/eval.sh", eval_script.encode()))
         yield StreamMessageChunk(type="message", data="Uploaded evaluation script")
 
-        # Execute tests with streaming, with a watchdog that alerts if no output for 5 min.
-        # Retry the entire stream on transient Daytona/WebSocket errors, resetting test_output
-        # each time so grading only sees output from a single complete run.
+        # Execute tests with streaming. Reset output on retry so grading only sees a complete run.
         run_command = create_run_command(task_id)
-        debug_msg = "[Debug]: No logs have been produced in the last 5 minutes, evaluation may be stuck"
         MAX_RETRIES = 3
 
         test_output: list[str] = []
         for attempt in range(MAX_RETRIES):
             test_output = []
-            queue: asyncio.Queue[str | None] = asyncio.Queue()
-            stream_error: Exception | None = None
-
-            async def _stream() -> None:
-                nonlocal stream_error
-                try:
-                    async for line in stream_command(sandbox, run_command, cwd="/testbed", ignore_error=True):
-                        await queue.put(line)
-                except (SandboxError, RuntimeError) as e:
-                    stream_error = e
-                finally:
-                    await queue.put(None)
-
             msg = "Running tests..." if attempt == 0 else f"Stream interrupted, retrying (attempt {attempt + 1}/{MAX_RETRIES})..."
             yield StreamMessageChunk(type="message", data=msg)
-            stream_task = asyncio.create_task(_stream())
             try:
-                while True:
-                    try:
-                        line = await asyncio.wait_for(queue.get(), timeout=300)
-                    except asyncio.TimeoutError:
-                        yield StreamMessageChunk(type="message", data=debug_msg)
-                        continue
-                    if line is None:
-                        break
+                async for line in sandbox.command(run_command, cwd="/testbed"):
                     test_output.append(line)
                     yield StreamMessageChunk(type="message", data=line)
-            finally:
-                stream_task.cancel()
-
-            if stream_error is None:
                 break
-            if attempt == MAX_RETRIES - 1:
-                raise stream_error
+            except SandboxCommandError:
+                break
+            except (SandboxError, RuntimeError):
+                if attempt == MAX_RETRIES - 1:
+                    raise
             await asyncio.sleep(2**attempt)
 
         # Grade results
