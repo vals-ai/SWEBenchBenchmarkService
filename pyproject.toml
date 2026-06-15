@@ -61,4 +61,4 @@ markers = [
 addopts = "-v -m 'not experimental'"
 
 [tool.uv.sources]
-create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "53142d47a2474be74eec6e1e85d107166f3d343d" }
+create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", tag = "v0.8.0" }
