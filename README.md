@@ -249,8 +249,10 @@ The project includes comprehensive tests covering unit and integration tests:
 # Run all tests (excluding experimental tests)
 make test
 
-# Run integration tests (requires sandbox provider config)
-export SANDBOX_PROVIDER_CONFIG='{"type":"daytona","DAYTONA_API_KEY":"your-key","DAYTONA_API_URL":"your-url","DAYTONA_TARGET":"your-target"}'
+# Run integration tests (requires Daytona credentials)
+export DAYTONA_API_KEY="your-key"
+export DAYTONA_API_URL="your-url"
+export DAYTONA_TARGET="your-target"
 make test
 
 # Run experimental tests (slow, tests all 500 images)
@@ -260,7 +262,7 @@ make test-experimental
 **Test Structure:**
 - `tests/unit/test_registry.py` - Dataset validation, setup script verification
 - `tests/unit/test_endpoints.py` - FastAPI endpoint tests
-- `tests/integration/test_end_to_end.py` - Full workflow tests with provider-backed sandboxes
+- `tests/integration/test_end_to_end.py` - Full workflow tests with Daytona sandboxes
 
 ### Project Structure
 

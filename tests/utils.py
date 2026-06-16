@@ -1,12 +1,13 @@
 import asyncio
 import json
 import logging
+import os
 from asyncio import Task
 from collections.abc import AsyncGenerator, Mapping
 from types import TracebackType
 from typing import Any, Protocol, cast
 
-from benchmark_service.sandbox import ExecResult, Sandbox, SandboxProviderConfig
+from daytona import AsyncSandbox, ExecuteResponse
 from httpx import Response
 from starlette.testclient import TestClient, WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
@@ -106,24 +107,31 @@ class BenchmarkServiceTestClient:
         return response
 
     async def request_setup_task(
-        self,
-        task_id: str,
-        instance_id: str,
-        dataset: str | None = None,
-        sandbox_provider: SandboxProviderConfig | None = None,
+        self, task_id: str, instance_id: str, dataset: str | None = None
     ) -> AsyncGenerator[str | dict[str, Any], None]:
         """
         Requests setup task from benchmark service via WebSocket
         """
+        api_key = os.getenv("DAYTONA_API_KEY")
+        api_url = os.getenv("DAYTONA_API_URL")
+        target = os.getenv("DAYTONA_TARGET")
+
+        if not api_key or not api_url or not target:
+            raise ValueError("API key, API URL, and target are required")
+
         json_data: dict[str, Any] = {
             "task_id": task_id,
             "instance_id": instance_id,
             "dataset": dataset,
         }
-        if sandbox_provider is not None:
-            json_data["sandbox_provider"] = sandbox_provider.model_dump()
 
-        with self._client.websocket_connect("/ws/setup-task") as websocket:
+        headers = {
+            "x-api-key": api_key,
+            "x-api-url": api_url,
+            "x-target": target,
+        }
+
+        with self._client.websocket_connect("/ws/setup-task", headers=headers) as websocket:
             websocket.send_json(json_data)
 
             while True:
@@ -135,24 +143,31 @@ class BenchmarkServiceTestClient:
                     break
 
     async def request_evaluate_instance(
-        self,
-        task_id: str,
-        instance_id: str,
-        dataset: str | None = None,
-        sandbox_provider: SandboxProviderConfig | None = None,
+        self, task_id: str, instance_id: str, dataset: str | None = None
     ) -> AsyncGenerator[str | dict[str, Any], None]:
         """
         Requests evaluate instance from benchmark service via WebSocket
         """
+        api_key = os.getenv("DAYTONA_API_KEY")
+        api_url = os.getenv("DAYTONA_API_URL")
+        target = os.getenv("DAYTONA_TARGET")
+
+        if not api_key or not api_url or not target:
+            raise Exception("API key, API URL, and target are required")
+
         json_data: dict[str, Any] = {
             "task_id": task_id,
             "instance_id": instance_id,
             "dataset": dataset,
         }
-        if sandbox_provider is not None:
-            json_data["sandbox_provider"] = sandbox_provider.model_dump()
 
-        with self._client.websocket_connect("/ws/evaluate-instance") as websocket:
+        headers = {
+            "x-api-key": api_key,
+            "x-api-url": api_url,
+            "x-target": target,
+        }
+
+        with self._client.websocket_connect("/ws/evaluate-instance", headers=headers) as websocket:
             websocket.send_json(json_data)
 
             while True:
@@ -177,20 +192,30 @@ class BenchmarkServiceTestClient:
         return response
 
 
-async def get_session_logger(sandbox: Sandbox, command: str, logger: logging.Logger) -> Task[None]:
-    """Create a task that logs streamed command output."""
+async def get_session_logger(sandbox: AsyncSandbox, session_id: str, cmd_id: str, logger: logging.Logger) -> Task[None]:
+    """Creates a new task that will log the stdout and stderr of the command to the logger"""
 
-    async def log_output() -> None:
-        async for line in sandbox.command(command):
-            if line.strip():
-                logger.debug(line.rstrip())
+    def log_stdout(stdout: str) -> None:
+        if stdout.strip():
+            logger.debug(f"[STDOUT]: {stdout.rstrip()}")
 
-    log_task = asyncio.create_task(log_output())
+    def log_stderr(stderr: str) -> None:
+        if stderr.strip():
+            logger.error(f"[STDERR]: {stderr.rstrip()}")
+
+    log_task = asyncio.create_task(
+        sandbox.process.get_session_command_logs_async(
+            session_id,
+            cmd_id,
+            log_stdout,
+            log_stderr,
+        )
+    )
 
     return log_task
 
 
-async def apply_patch(sandbox: Sandbox, patch_path: str) -> str:
+async def apply_patch(sandbox: AsyncSandbox, patch_path: str) -> str:
     GIT_APPLY_CMDS = [
         "git apply --verbose",
         "git apply --verbose --reject",
@@ -198,13 +223,14 @@ async def apply_patch(sandbox: Sandbox, patch_path: str) -> str:
     ]
 
     for git_apply_cmd in GIT_APPLY_CMDS:
-        result: ExecResult = await sandbox.exec(
-            f"{git_apply_cmd} {patch_path}",
+        result: ExecuteResponse = await sandbox.process.exec(
+            command=f"{git_apply_cmd} {patch_path}",
             cwd="/testbed",
         )
 
         if result.exit_code == 0:
-            return result.output
-        logger.warning(f"Failed to apply patch command `{git_apply_cmd}`:{result.output}")
+            return result.result
+        else:
+            logger.warning(f"Failed to apply patch command `{git_apply_cmd}`:{result.result}")
 
     raise ValueError(f"Failed to apply patch `{patch_path}`")
