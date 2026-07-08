@@ -22,6 +22,7 @@ from swebench.harness.test_spec.test_spec import make_test_spec
 
 from swebench_service import (
     DISK_PATH,
+    EVAL_OUTPUT_PATH,
     create_evaluation_script,
     create_run_command,
     get_pre_install_commands,
@@ -207,8 +208,21 @@ class SWEBenchService(BenchmarkService):
                     raise
             await asyncio.sleep(2**attempt)
 
-        # Grade results
-        evaluation_result = grade_test_output("".join(test_output), test_spec, prediction)
+        # Grade from the faithfully-captured log file rather than the reassembled
+        # PTY stream. `sandbox.command` runs the eval inside an interactive PTY, on
+        # which TTY-sensitive reporters (e.g. sympy's `bin/test`) emit a
+        # carriage-return progress bar with no parseable per-test lines; the tee'd
+        # file (a plain pipe) preserves them. Fall back to the stream if the file
+        # is unavailable (e.g. the run was interrupted before it was written).
+        graded_output = "".join(test_output)
+        try:
+            log_file = await with_retry(sandbox, lambda: sandbox.exec(f"cat {EVAL_OUTPUT_PATH}", cwd="/testbed"))
+            if log_file.output and log_file.output.strip():
+                graded_output = log_file.output
+        except SandboxError:
+            pass
+
+        evaluation_result = grade_test_output(graded_output, test_spec, prediction)
 
         yield StreamResultChunk(type="result", data=evaluation_result.model_dump())
 

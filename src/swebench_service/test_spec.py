@@ -5,6 +5,13 @@ from typing import Any, cast
 from swebench.harness.constants import MAP_REPO_VERSION_TO_SPECS
 from swebench.harness.test_spec.test_spec import TestSpec
 
+# Path inside the sandbox where the raw eval output is captured for grading.
+# Grading reads this file (a plain pipe, not the interactive PTY) so that
+# TTY-sensitive test reporters (e.g. sympy's `bin/test`, which switches to a
+# carriage-return progress display on a TTY) still emit the per-line results
+# that the SWE-bench log parsers require.
+EVAL_OUTPUT_PATH = "/root/eval_output.log"
+
 
 def get_pre_install_commands(repo: str, version: str) -> list[str]:
     """
@@ -77,8 +84,16 @@ def create_run_command(task_id: str) -> str:
     if "pylint" in task_id:
         run_command += " && PYTHONPATH="
 
-    # Increase recursion limit and run evaluation script
+    # Increase recursion limit and run evaluation script.
+    # Pipe eval.sh through `tee` so its stdout is a pipe (not the interactive PTY
+    # that `sandbox.command` allocates). This keeps live streaming for the
+    # watchdog while writing a faithful, non-TTY copy to EVAL_OUTPUT_PATH that
+    # grading reads back — otherwise TTY-sensitive reporters like sympy render a
+    # carriage-return progress bar with no parseable per-test lines.
     run_command += " && python3 -c 'import sys; sys.setrecursionlimit(10000)'"
-    run_command += " && GIT_PAGER=cat PAGER=cat LESS='-F -X' TERM=dumb /bin/bash /root/eval.sh 2>&1"
+    run_command += (
+        " && GIT_PAGER=cat PAGER=cat LESS='-F -X' TERM=dumb"
+        f" /bin/bash /root/eval.sh 2>&1 | tee {EVAL_OUTPUT_PATH}"
+    )
 
     return run_command
