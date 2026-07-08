@@ -14,3 +14,18 @@ def test_create_run_command_disables_interactive_git_pagers() -> None:
     assert "GIT_PAGER=cat PAGER=cat LESS='-F -X' TERM=dumb" in command
     assert "GIT_PAGER=cat PAGER=cat LESS='-F -X' TERM=dumb" in pylint_command
     assert "PYTHONPATH=" in pylint_command
+
+
+def test_create_run_command_tees_eval_output_to_file() -> None:
+    """Eval output must be captured to a file for grading.
+
+    `sandbox.command` runs the eval inside an interactive PTY, on which
+    TTY-sensitive reporters (e.g. sympy's `bin/test`) emit a carriage-return
+    progress bar with no parseable per-test lines. Teeing eval.sh through a pipe
+    makes its stdout non-TTY, restoring the per-test lines the parser needs.
+    """
+    from swebench_service.test_spec import EVAL_OUTPUT_PATH
+
+    command = create_run_command("sympy__sympy-21612")
+
+    assert f"/bin/bash /root/eval.sh 2>&1 | tee {EVAL_OUTPUT_PATH}" in command
