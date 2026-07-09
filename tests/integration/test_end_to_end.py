@@ -2,6 +2,7 @@ import os
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import pytest
 from daytona import AsyncDaytona, CreateSandboxFromImageParams, DaytonaConfig, Resources
@@ -55,6 +56,7 @@ class TestEndToEnd:
             CreateSandboxFromImageParams(
                 name=f"test-{task_id}",
                 image=docker_image,
+                labels={"Id": str(uuid4()), "Benchmark": "swebench"},
                 resources=Resources(cpu=2, memory=4, disk=10),
             )
         )
@@ -154,6 +156,7 @@ class TestEndToEnd:
                 CreateSandboxFromImageParams(
                     name=f"test-{task_id}",
                     image=docker_image,
+                    labels={"Id": str(uuid4()), "Benchmark": "swebench"},
                     resources=Resources(cpu=2, memory=4, disk=10),
                 )
             )
