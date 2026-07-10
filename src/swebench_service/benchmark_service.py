@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import hashlib
 import logging
-import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
@@ -12,7 +11,6 @@ from uuid import uuid4
 
 from benchmark_service import BenchmarkService
 from benchmark_service.sandbox import (
-    DaytonaProviderConfig,
     ImageSource,
     Sandbox,
     SandboxCommandError,
@@ -54,29 +52,6 @@ PREDICTION_CAPTURE_COMMAND = (
 COMMAND_QUIET_SECONDS = 300.0
 EVAL_SANDBOX_CREATE_TIMEOUT_SECONDS = 600
 EVAL_SANDBOX_AUTO_STOP_MINUTES = 15
-
-
-def _resume_provider_config() -> DaytonaProviderConfig:
-    api_key = os.environ.get("DAYTONA_API_KEY")
-    api_url = os.environ.get("DAYTONA_API_URL")
-    target = os.environ.get("DAYTONA_TARGET")
-    missing = [
-        name
-        for name, value in (
-            ("DAYTONA_API_KEY", api_key),
-            ("DAYTONA_API_URL", api_url),
-            ("DAYTONA_TARGET", target),
-        )
-        if not value
-    ]
-    if missing:
-        raise RuntimeError(f"SWE-bench eval resume is missing sandbox configuration: {', '.join(missing)}")
-    assert api_key is not None and api_url is not None and target is not None
-    return DaytonaProviderConfig(
-        DAYTONA_API_KEY=api_key,
-        DAYTONA_API_URL=api_url,
-        DAYTONA_TARGET=target,
-    )
 
 
 def _resume_sandbox_name(state: EvalResumeState) -> str:
@@ -228,6 +203,8 @@ class SWEBenchService(BenchmarkService):
             raise ValueError(f"eval_resume_state task_id mismatch: {state.task_id} != {request.task_id}")
         if state.dataset != requested_dataset:
             raise ValueError(f"eval_resume_state dataset mismatch: {state.dataset} != {requested_dataset}")
+        if request.sandbox_provider is None:
+            raise ValueError("SWE-bench eval resume requires sandbox_provider")
 
         await self.validate_task_ids([request.task_id], dataset=dataset)
         yield StreamEvalResumeStateChunk(type="eval_resume_state", data=state.model_dump(mode="json"))
@@ -235,8 +212,7 @@ class SWEBenchService(BenchmarkService):
         prediction = prediction_bytes.decode("utf-8", errors="replace") or None
 
         task_data = await self.retrieve_task(request.task_id, skip_validation=True, dataset=dataset)
-        config = _resume_provider_config()
-        async with config.create_provider() as provider:
+        async with request.sandbox_provider.create_provider() as provider:
             sandbox = await provider.create_sandbox(
                 SandboxCreateRequest(
                     source=task_data.source,

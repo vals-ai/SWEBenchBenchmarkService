@@ -5,7 +5,14 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
-from benchmark_service.sandbox import ExecResult, Sandbox, SandboxCreateRequest, SandboxProvider, SandboxQuery
+from benchmark_service.sandbox import (
+    DaytonaProviderConfig,
+    ExecResult,
+    Sandbox,
+    SandboxCreateRequest,
+    SandboxProvider,
+    SandboxQuery,
+)
 from benchmark_service.schemas import EvaluateResponseRequest, StreamChunk, StreamResultChunk
 from pydantic import ValidationError
 
@@ -88,14 +95,6 @@ class FakeProvider(SandboxProvider):
             yield self.sandbox
 
 
-class FakeProviderConfig:
-    def __init__(self, provider: FakeProvider) -> None:
-        self.provider = provider
-
-    def create_provider(self) -> SandboxProvider:
-        return self.provider
-
-
 def service() -> SWEBenchService:
     instance = SWEBenchService()
     instance.datasets = {
@@ -109,6 +108,21 @@ def service() -> SWEBenchService:
         }
     }
     return instance
+
+
+def sandbox_provider_config() -> DaytonaProviderConfig:
+    return DaytonaProviderConfig(
+        DAYTONA_API_KEY="key",
+        DAYTONA_API_URL="url",
+        DAYTONA_TARGET="target",
+    )
+
+
+def use_provider(monkeypatch: pytest.MonkeyPatch, provider: FakeProvider) -> None:
+    def create_provider(_config: DaytonaProviderConfig) -> SandboxProvider:
+        return provider
+
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", create_provider)
 
 
 @pytest.mark.parametrize(
@@ -154,10 +168,7 @@ async def test_failed_evaluation_resumes_from_exact_persisted_patch(
 
     provider = FakeProvider()
     provider.sandbox.captured_prediction = patch_bytes
-    monkeypatch.setattr(
-        "swebench_service.benchmark_service._resume_provider_config",
-        lambda: FakeProviderConfig(provider),
-    )
+    use_provider(monkeypatch, provider)
     evaluated_predictions: list[str | None] = []
 
     async def succeed_evaluation(
@@ -178,7 +189,11 @@ async def test_failed_evaluation_resumes_from_exact_persisted_patch(
         )
 
     monkeypatch.setattr(benchmark, "_evaluate_prediction", succeed_evaluation)
-    request = EvaluateResponseRequest(task_id="task-1", eval_resume_state=state.model_dump(mode="json"))
+    request = EvaluateResponseRequest(
+        task_id="task-1",
+        eval_resume_state=state.model_dump(mode="json"),
+        sandbox_provider=sandbox_provider_config(),
+    )
     resumed = [chunk async for chunk in benchmark.stream_evaluate_response(request)]
 
     assert resumed[-1].type == "result"
@@ -204,10 +219,7 @@ async def test_resume_deletes_sandbox_when_evaluation_fails(monkeypatch: pytest.
     state = await persist_prediction(original_sandbox, "task-1", None, b"patch")
     provider = FakeProvider()
     provider.sandbox.captured_prediction = b"patch"
-    monkeypatch.setattr(
-        "swebench_service.benchmark_service._resume_provider_config",
-        lambda: FakeProviderConfig(provider),
-    )
+    use_provider(monkeypatch, provider)
 
     async def fail_evaluation(
         task_id: str,
@@ -220,7 +232,11 @@ async def test_resume_deletes_sandbox_when_evaluation_fails(monkeypatch: pytest.
         raise RuntimeError("resume failed")
 
     monkeypatch.setattr(benchmark, "_evaluate_prediction", fail_evaluation)
-    request = EvaluateResponseRequest(task_id="task-1", eval_resume_state=state.model_dump(mode="json"))
+    request = EvaluateResponseRequest(
+        task_id="task-1",
+        eval_resume_state=state.model_dump(mode="json"),
+        sandbox_provider=sandbox_provider_config(),
+    )
 
     with pytest.raises(RuntimeError, match="resume failed"):
         _ = [chunk async for chunk in benchmark.stream_evaluate_response(request)]
@@ -248,6 +264,15 @@ async def test_resume_rejects_mismatched_dataset_before_loading_artifact() -> No
 
     with pytest.raises(ValueError, match="dataset mismatch"):
         _ = [chunk async for chunk in benchmark.stream_evaluate_response(request, dataset="vals_index")]
+
+
+async def test_resume_requires_request_scoped_sandbox_provider() -> None:
+    benchmark = service()
+    state = await persist_prediction(FakeSandbox(), "task-1", None, b"patch")
+    request = EvaluateResponseRequest(task_id="task-1", eval_resume_state=state.model_dump(mode="json"))
+
+    with pytest.raises(ValueError, match="requires sandbox_provider"):
+        _ = [chunk async for chunk in benchmark.stream_evaluate_response(request)]
 
 
 @pytest.mark.parametrize(
@@ -337,10 +362,7 @@ async def test_empty_prediction_resumes_without_git_apply(monkeypatch: pytest.Mo
     )
     provider = FakeProvider()
     provider.sandbox.captured_prediction = b""
-    monkeypatch.setattr(
-        "swebench_service.benchmark_service._resume_provider_config",
-        lambda: FakeProviderConfig(provider),
-    )
+    use_provider(monkeypatch, provider)
 
     async def evaluation(
         task_id: str,
@@ -352,7 +374,11 @@ async def test_empty_prediction_resumes_without_git_apply(monkeypatch: pytest.Mo
         yield StreamResultChunk(type="result", data={"resolved": False})
 
     monkeypatch.setattr(benchmark, "_evaluate_prediction", evaluation)
-    request = EvaluateResponseRequest(task_id="task-1", eval_resume_state=state.model_dump(mode="json"))
+    request = EvaluateResponseRequest(
+        task_id="task-1",
+        eval_resume_state=state.model_dump(mode="json"),
+        sandbox_provider=sandbox_provider_config(),
+    )
 
     chunks = [chunk async for chunk in benchmark.stream_evaluate_response(request)]
 
