@@ -52,6 +52,9 @@ PREDICTION_CAPTURE_COMMAND = (
 COMMAND_QUIET_SECONDS = 300.0
 EVAL_SANDBOX_CREATE_TIMEOUT_SECONDS = 600
 EVAL_SANDBOX_AUTO_STOP_MINUTES = 15
+IMAGE_DIGEST_OVERRIDES = {
+    "scikit-learn__scikit-learn-12585": "sha256:438346134907344bb2444ac8f0764ffa90384cf9a4bcfc2b4b398ed95847308e",
+}
 
 
 def _resume_sandbox_name(state: EvalResumeState) -> str:
@@ -137,7 +140,9 @@ class SWEBenchService(BenchmarkService):
             await self.validate_task_ids([task_id], dataset=dataset)
 
         id_docker_compatible = task_id.replace("__", "_1776_")
-        docker_image = f"swebench/sweb.eval.x86_64.{id_docker_compatible}:latest"
+        image_repository = f"swebench/sweb.eval.x86_64.{id_docker_compatible}"
+        image_digest = IMAGE_DIGEST_OVERRIDES.get(task_id)
+        docker_image = f"{image_repository}@{image_digest}" if image_digest else f"{image_repository}:latest"
 
         # Default: 2 vCPU, 4GB memory
         resources = Resources(vcpu=2, memory=4, disk=10)
