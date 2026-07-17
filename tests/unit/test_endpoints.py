@@ -128,6 +128,16 @@ class TestEndpoints:
         response = await client.request_retrieve_task("invalid-task-id")
         assert response.status_code == 400
 
+    async def test_retrieve_task_uses_pinned_image_override(self, client: BenchmarkServiceTestClient) -> None:
+        """Use the immutable image reference for tasks with a digest override."""
+        response = await client.request_retrieve_task("scikit-learn__scikit-learn-12585", dataset="vals_index")
+
+        assert response.status_code == 200
+        assert response.json()["docker_image"] == (
+            "swebench/sweb.eval.x86_64.scikit-learn_1776_scikit-learn-12585"
+            "@sha256:438346134907344bb2444ac8f0764ffa90384cf9a4bcfc2b4b398ed95847308e"
+        )
+
     async def test_retrieve_task_multiple(self, client: BenchmarkServiceTestClient) -> None:
         """Test /retrieve-task/ with multiple different tasks."""
         task_ids = ["django__django-11099", "astropy__astropy-12907"]

@@ -1,16 +1,29 @@
 import asyncio
 from collections.abc import AsyncGenerator
+from types import SimpleNamespace
 
 import pytest
 from benchmark_service.sandbox import ExecResult, Sandbox
 from benchmark_service.schemas import StreamMessageChunk
 
-from swebench_service.benchmark_service import COMMAND_QUIET_SECONDS, PROBLEM_STATEMENT_PATH, SWEBenchService, watchdog_message
+from swebench_service.benchmark_service import (
+    COMMAND_QUIET_SECONDS,
+    PREDICTION_CAPTURE_COMMAND,
+    PROBLEM_STATEMENT_PATH,
+    SWEBenchService,
+    watchdog_message,
+)
 from swebench_service.schemas import EvaluationResult
 
 
 class FakeSandbox(Sandbox):
     def __init__(self) -> None:
+        self._sandbox = SimpleNamespace(
+            labels={
+                "Id": "00000000-0000-0000-0000-000000000001",
+                "Benchmark": "swebench",
+            }
+        )
         self.uploads: dict[str, bytes] = {}
         self.commands: list[tuple[str, str | None]] = []
 
@@ -28,6 +41,8 @@ class FakeSandbox(Sandbox):
 
     async def exec(self, command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
         self.commands.append((command, cwd))
+        if command == PREDICTION_CAPTURE_COMMAND:
+            self.uploads["/tmp/swebench-prediction.patch"] = b""
         return ExecResult(exit_code=0, output="")
 
     async def command(
@@ -168,10 +183,10 @@ async def test_evaluate_instance_grades_captured_log_file(monkeypatch: pytest.Mo
 
     class LogFileSandbox(FakeSandbox):
         async def exec(self, command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
-            self.commands.append((command, cwd))
             if command == f"cat {EVAL_OUTPUT_PATH}":
+                self.commands.append((command, cwd))
                 return ExecResult(exit_code=0, output="test_Mul ok\ntest_Abs ok\n")
-            return ExecResult(exit_code=0, output="")
+            return await super().exec(command, cwd=cwd, timeout=timeout)
 
     sandbox = LogFileSandbox()
     test_spec = object()

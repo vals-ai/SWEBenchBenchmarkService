@@ -5,6 +5,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 
 dependencies = [
+    "boto3>=1.42.62",
     "create-benchmark-service",
     "datasets>=4.4.2",
     "swebench==4.1.0",
