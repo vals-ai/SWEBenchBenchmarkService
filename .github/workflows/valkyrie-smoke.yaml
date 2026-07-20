@@ -1,0 +1,187 @@
+name: valkyrie-smoke
+
+on:
+  push:
+    branches:
+      - jf/auto-ci-test
+      - dev
+      - prod
+      - main
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Optional model override, e.g. openai/gpt-5.5"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: valkyrie-smoke-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  BENCHMARK_NAME: swebench
+  SMOKE_DATASET: vals_index
+  SMOKE_TASK_ID: astropy__astropy-12907
+  SMOKE_AGENT: ${{ vars.SMOKE_AGENT || 'mini_sweagent' }}
+  SMOKE_MODEL: ${{ github.event.inputs.model || vars.VALKYRIE_SMOKE_MODEL || '' }}
+  SERVICE_PORT: "8001"
+  HEALTH_PATH: /health
+  VALKYRIE_CONFIG_SECRET_ID: ${{ vars.VALKYRIE_CONFIG_SECRET_ID }}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.VALKYRIE_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Join tailnet
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:ci
+          hostname: gha-${{ github.run_id }}-${{ github.run_attempt }}
+          version: latest
+
+      - name: Install Valkyrie prod CLI
+        run: |
+          uv tool install --force "git+https://github.com/vals-ai/Valkyrie.git@prod"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build and run benchmark service
+        run: |
+          set -euo pipefail
+
+          docker build -t "swebench-benchmark-service:${GITHUB_SHA}" .
+          docker run -d --name swebench-benchmark-service \
+            -p "127.0.0.1:${SERVICE_PORT}:8001" \
+            "swebench-benchmark-service:${GITHUB_SHA}"
+
+          for _ in {1..60}; do
+            curl -fsS "http://127.0.0.1:${SERVICE_PORT}${HEALTH_PATH}" && exit 0
+            sleep 2
+          done
+
+          docker logs swebench-benchmark-service
+          exit 1
+
+      - name: Expose benchmark service with Tailscale Funnel
+        run: |
+          set -euo pipefail
+
+          tailscale funnel --bg --yes "http://127.0.0.1:${SERVICE_PORT}"
+          tailscale funnel status
+
+          service_url="$(
+            tailscale status --json |
+            python3 -c 'import json, sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))'
+          )"
+          service_url="https://${service_url}"
+          echo "SERVICE_URL=${service_url}" >> "$GITHUB_ENV"
+
+          for _ in {1..60}; do
+            curl -fsS "${service_url}${HEALTH_PATH}" && exit 0
+            sleep 2
+          done
+
+          tailscale funnel status
+          exit 1
+
+      - name: Configure Valkyrie
+        run: |
+          set -euo pipefail
+
+          mkdir -p ~/.config/valkyrie
+          aws secretsmanager get-secret-value \
+            --secret-id "${VALKYRIE_CONFIG_SECRET_ID}" \
+            --query SecretString \
+            --output text > ~/.config/valkyrie/valkyrie.yaml
+
+          {
+            printf '\n'
+            printf 'AWS_ACCESS_KEY_ID: "%s"\n' "${AWS_ACCESS_KEY_ID}"
+            printf 'AWS_SECRET_ACCESS_KEY: "%s"\n' "${AWS_SECRET_ACCESS_KEY}"
+            printf 'AWS_SESSION_TOKEN: "%s"\n' "${AWS_SESSION_TOKEN}"
+            printf 'AWS_DEFAULT_REGION: "%s"\n' "${AWS_REGION}"
+          } >> ~/.config/valkyrie/valkyrie.yaml
+
+          valkyrie config service set "${BENCHMARK_NAME}" "${SERVICE_URL}"
+
+      - name: Start one-task Valkyrie smoke run
+        run: |
+          set -euo pipefail
+
+          args=(
+            run start
+            --agent "${SMOKE_AGENT}"
+            --benchmark "${BENCHMARK_NAME}"
+            --dataset "${SMOKE_DATASET}"
+            --task-ids "${SMOKE_TASK_ID}"
+            --concurrency 1
+            --label "ci-${GITHUB_REF_NAME}-${GITHUB_SHA}"
+          )
+
+          if [ -n "${SMOKE_MODEL:-}" ]; then
+            args+=(--model "${SMOKE_MODEL}")
+          fi
+
+          output="$(valkyrie "${args[@]}" 2>&1)"
+          printf '%s\n' "$output"
+
+          run_id="$(printf '%s\n' "$output" | sed -nE 's/.*Run ID:[[:space:]]+([0-9a-f-]{36}).*/\1/p' | tail -1)"
+          test -n "$run_id"
+          echo "VALKYRIE_RUN_ID=${run_id}" >> "$GITHUB_ENV"
+
+      - name: Wait for smoke result
+        run: |
+          set -euo pipefail
+
+          for _ in {1..90}; do
+            valkyrie run fetch "${VALKYRIE_RUN_ID}" --format json > /tmp/valkyrie-run.json
+            cat /tmp/valkyrie-run.json
+
+            status="$(python3 -c 'import json; print(str(json.load(open("/tmp/valkyrie-run.json")).get("status", "")).upper())')"
+            case "$status" in
+              FINISHED|COMPLETED|SUCCESS|SUCCEEDED) break ;;
+              ERROR|FAILED|STOPPED) exit 1 ;;
+            esac
+
+            sleep 30
+          done
+
+          python3 - <<'PY'
+          import json
+          import sys
+
+          with open("/tmp/valkyrie-run.json") as file:
+              run = json.load(file)
+
+          status = str(run.get("status", "")).upper()
+          counts = {str(key).upper(): value for key, value in (run.get("task_state_counts") or {}).items()}
+          if status not in {"FINISHED", "COMPLETED", "SUCCESS", "SUCCEEDED"}:
+              sys.exit(f"Run did not finish successfully: {status}")
+          if counts.get("ERROR", 0) or counts.get("STOPPED", 0):
+              sys.exit(f"Smoke task failed: {counts}")
+          PY
