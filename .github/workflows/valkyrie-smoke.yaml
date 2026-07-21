@@ -18,20 +18,20 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
+  AWS_REGION: us-east-1
   BENCHMARK_NAME: ${{ secrets.BENCHMARK_NAME }}
   SMOKE_DATASET: ${{ secrets.SMOKE_DATASET }}
   SMOKE_TASK_ID: ${{ secrets.SMOKE_TASK_ID }}
   SMOKE_AGENT: ${{ secrets.SMOKE_AGENT }}
   SMOKE_MODEL: ${{ github.event.inputs.model || secrets.SMOKE_MODEL }}
-  SERVICE_PORT: ${{ secrets.BENCHMARK_SERVICE_PORT }}
-  CONTAINER_PORT: ${{ secrets.BENCHMARK_CONTAINER_PORT }}
-  HEALTH_PATH: ${{ secrets.BENCHMARK_HEALTH_PATH }}
-  FUNNEL_READY_SECONDS: ${{ secrets.FUNNEL_READY_SECONDS }}
-  TAILSCALE_TAGS: ${{ secrets.TAILSCALE_TAGS }}
-  TAILSCALE_HOSTNAME: ${{ secrets.TAILSCALE_HOSTNAME }}
+  SERVICE_PORT: "8001"
+  CONTAINER_PORT: "8001"
+  HEALTH_PATH: /health
+  FUNNEL_READY_SECONDS: "300"
+  TAILSCALE_TAGS: tag:github-ci
+  TAILSCALE_HOSTNAME: ${{ format('{0}-benchmark-smoke', secrets.BENCHMARK_NAME) }}
   VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
-  VALKYRIE_CONFIG_SECRET_ID: ${{ secrets.VALKYRIE_CONFIG_SECRET_ID }}
+  VALKYRIE_CONFIG_SECRET_ID: ${{ github.ref_name == 'prod' && 'prodBenchmarksInfraValkyrieConfig' || 'devBenchmarksInfraValkyrieConfig' }}
 
 jobs:
   smoke:
@@ -65,20 +65,12 @@ jobs:
             fi
           }
 
-          require_env AWS_REGION
           require_env BENCHMARK_NAME
           require_env SMOKE_DATASET
           require_env SMOKE_TASK_ID
           require_env SMOKE_AGENT
           require_env SMOKE_MODEL
-          require_env SERVICE_PORT
-          require_env CONTAINER_PORT
-          require_env HEALTH_PATH
-          require_env FUNNEL_READY_SECONDS
-          require_env TAILSCALE_TAGS
-          require_env TAILSCALE_HOSTNAME
           require_env VALKYRIE_AWS_ROLE_ARN
-          require_env VALKYRIE_CONFIG_SECRET_ID
           require_env TS_OAUTH_CLIENT_ID
           require_env TS_AUDIENCE
 
