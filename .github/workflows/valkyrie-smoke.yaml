@@ -27,9 +27,9 @@ env:
   SERVICE_PORT: "8001"
   CONTAINER_PORT: "8001"
   HEALTH_PATH: /health
-  FUNNEL_READY_SECONDS: "300"
-  TAILSCALE_TAGS: tag:github-ci
-  TAILSCALE_HOSTNAME: ${{ format('{0}-benchmark-smoke', secrets.BENCHMARK_NAME) }}
+  TUNNEL_READY_SECONDS: "300"
+  NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+  NGROK_URL: ${{ secrets.NGROK_URL }}
   VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
   VALKYRIE_CONFIG_SECRET_ID: ${{ github.ref_name == 'prod' && 'prodBenchmarksInfraValkyrieConfig' || 'devBenchmarksInfraValkyrieConfig' }}
 
@@ -51,9 +51,6 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Validate and resolve smoke configuration
-        env:
-          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
         run: |
           set -euo pipefail
 
@@ -71,8 +68,7 @@ jobs:
           require_env SMOKE_AGENT
           require_env SMOKE_MODEL
           require_env VALKYRIE_AWS_ROLE_ARN
-          require_env TS_OAUTH_CLIENT_ID
-          require_env TS_AUDIENCE
+          require_env NGROK_AUTHTOKEN
 
           if [ "$missing" -ne 0 ]; then
             exit "$missing"
@@ -98,15 +94,6 @@ jobs:
           role-to-assume: ${{ env.VALKYRIE_AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Join tailnet
-        uses: tailscale/github-action@v4
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          audience: ${{ secrets.TS_AUDIENCE }}
-          tags: ${{ env.TAILSCALE_TAGS }}
-          hostname: ${{ env.TAILSCALE_HOSTNAME }}
-          version: latest
-
       - name: Install Valkyrie prod package
         run: |
           uv tool install --force "git+https://github.com/vals-ai/Valkyrie.git@prod"
@@ -129,72 +116,62 @@ jobs:
           docker logs "${CONTAINER_NAME}"
           exit 1
 
-      - name: Expose benchmark service
+      - name: Install ngrok
         run: |
           set -euo pipefail
 
-          sudo tailscale funnel --bg --yes "${SERVICE_PORT}"
+          curl -sSLo /tmp/ngrok.tgz https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+          sudo tar -xzf /tmp/ngrok.tgz -C /usr/local/bin
+          ngrok version
 
-          service_url="$(
-            tailscale status --json |
-            python3 -c 'import json, sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))'
-          )"
-          service_url="https://${service_url}"
-          echo "SERVICE_URL=${service_url}" >> "$GITHUB_ENV"
-
-      - name: Show Funnel URL
-        run: sudo tailscale funnel status
-
-      - name: Wait for public Funnel health
+      - name: Expose benchmark service with ngrok
         run: |
           set -euo pipefail
 
-          funnel_host="${SERVICE_URL#https://}"
-          funnel_host="${funnel_host%%/*}"
+          ngrok config add-authtoken "${NGROK_AUTHTOKEN}"
 
-          resolve_public_funnel_ip() {
-            FUNNEL_HOST="${funnel_host}" python3 - <<'PY'
-          import ipaddress
+          ngrok_args=(http "http://127.0.0.1:${SERVICE_PORT}" --log stdout)
+          if [ -n "${NGROK_URL:-}" ]; then
+            ngrok_args+=(--url "${NGROK_URL}")
+          fi
+
+          ngrok "${ngrok_args[@]}" > /tmp/ngrok.log 2>&1 &
+          echo "NGROK_PID=$!" >> "$GITHUB_ENV"
+
+          deadline=$((SECONDS + TUNNEL_READY_SECONDS))
+          until service_url="$(
+            python3 - <<'PY'
           import json
-          import os
-          import urllib.parse
           import urllib.request
 
-          host = os.environ["FUNNEL_HOST"]
-          query = urllib.parse.urlencode({"name": host, "type": "A"})
-          request = urllib.request.Request(
-              f"https://cloudflare-dns.com/dns-query?{query}",
-              headers={"accept": "application/dns-json"},
-          )
-          with urllib.request.urlopen(request, timeout=10) as response:
-              payload = json.load(response)
+          try:
+              with urllib.request.urlopen("http://127.0.0.1:4040/api/tunnels", timeout=2) as response:
+                  payload = json.load(response)
+          except Exception:
+              raise SystemExit(1)
 
-          shared_cgnat = ipaddress.ip_network("100.64.0.0/10")
-          for answer in payload.get("Answer", []):
-              if answer.get("type") != 1:
-                  continue
-              address = ipaddress.ip_address(answer.get("data", ""))
-              if address not in shared_cgnat and not address.is_private and not address.is_loopback:
-                  print(address)
+          for tunnel in payload.get("tunnels", []):
+              public_url = tunnel.get("public_url", "")
+              if public_url.startswith("https://"):
+                  print(public_url)
                   break
           else:
-              raise SystemExit(f"No public Funnel A record for {host}: {payload}")
+              raise SystemExit(1)
           PY
-          }
-
-          deadline=$((SECONDS + FUNNEL_READY_SECONDS))
-          until public_ip="$(resolve_public_funnel_ip)" &&
-            curl -fsS --resolve "${funnel_host}:443:${public_ip}" --connect-timeout 10 --max-time 20 \
-              "${SERVICE_URL}${HEALTH_PATH}"; do
+          )" &&
+            curl -fsS --connect-timeout 10 --max-time 20 "${service_url}${HEALTH_PATH}"; do
             if [ "$SECONDS" -ge "$deadline" ]; then
-              sudo tailscale funnel status
-              public_ip="$(resolve_public_funnel_ip)"
-              curl -v --resolve "${funnel_host}:443:${public_ip}" --connect-timeout 10 --max-time 20 \
-                "${SERVICE_URL}${HEALTH_PATH}"
+              cat /tmp/ngrok.log
+              if [ -n "${service_url:-}" ]; then
+                curl -v --connect-timeout 10 --max-time 20 "${service_url}${HEALTH_PATH}"
+              fi
               exit 1
             fi
             sleep 5
           done
+
+          echo "SERVICE_URL=${service_url}" >> "$GITHUB_ENV"
+          echo "ngrok URL: ${service_url}"
 
       - name: Configure Valkyrie SDK
         run: |
@@ -233,7 +210,7 @@ jobs:
           async def main() -> None:
               benchmark_name = os.environ["BENCHMARK_NAME"]
               service_url = os.environ["SERVICE_URL"]
-              deadline = time.monotonic() + int(os.environ["FUNNEL_READY_SECONDS"])
+              deadline = time.monotonic() + int(os.environ["TUNNEL_READY_SECONDS"])
               config = ValkyrieConfig.from_yaml()
               config.custom_benchmark_services[benchmark_name] = service_url
               entry = BenchmarkServiceEntry(name=benchmark_name, url=service_url)
@@ -344,9 +321,9 @@ jobs:
           asyncio.run(main())
           PY
 
-      - name: Stop Tailscale Funnel
+      - name: Stop ngrok tunnel
         if: always()
         run: |
-          if command -v tailscale >/dev/null 2>&1; then
-            sudo tailscale funnel reset || true
+          if [ -n "${NGROK_PID:-}" ]; then
+            kill "${NGROK_PID}" || true
           fi
