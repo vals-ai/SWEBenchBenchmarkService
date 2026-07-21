@@ -115,8 +115,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          tailscale funnel --bg --yes "${SERVICE_PORT}"
-          tailscale funnel status
+          sudo tailscale funnel --bg --yes "${SERVICE_PORT}"
+          sudo tailscale funnel status
 
           service_url="$(
             tailscale status --json |
@@ -130,7 +130,7 @@ jobs:
             sleep 2
           done
 
-          tailscale funnel status
+          sudo tailscale funnel status
           exit 1
 
       - name: Configure Valkyrie
@@ -212,4 +212,4 @@ jobs:
 
       - name: Stop Tailscale Funnel
         if: always()
-        run: tailscale funnel reset || true
+        run: sudo tailscale funnel reset || true
