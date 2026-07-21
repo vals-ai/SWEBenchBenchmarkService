@@ -54,8 +54,8 @@ jobs:
 
       - name: Validate smoke configuration
         env:
-          TS_OAUTH_CLIENT_ID: ${{ vars.TS_OAUTH_CLIENT_ID }}
-          TS_AUDIENCE: ${{ vars.TS_AUDIENCE }}
+          TS_OAUTH_CLIENT_ID: ${{ vars.TS_OAUTH_CLIENT_ID || secrets.TS_OAUTH_CLIENT_ID }}
+          TS_AUDIENCE: ${{ vars.TS_AUDIENCE || secrets.TS_AUDIENCE }}
         run: |
           set -euo pipefail
 
@@ -83,8 +83,8 @@ jobs:
       - name: Join tailnet
         uses: tailscale/github-action@v4
         with:
-          oauth-client-id: ${{ vars.TS_OAUTH_CLIENT_ID }}
-          audience: ${{ vars.TS_AUDIENCE }}
+          oauth-client-id: ${{ vars.TS_OAUTH_CLIENT_ID || secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ vars.TS_AUDIENCE || secrets.TS_AUDIENCE }}
           tags: tag:github-ci
           hostname: gha-${{ github.run_id }}-${{ github.run_attempt }}
           version: latest
@@ -212,4 +212,4 @@ jobs:
 
       - name: Stop Tailscale Funnel
         if: always()
-        run: tailscale funnel reset
+        run: tailscale funnel reset || true
