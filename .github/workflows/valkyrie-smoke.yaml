@@ -98,7 +98,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          docker build -t "swebench-benchmark-service:${GITHUB_SHA}" .
+          docker build --quiet -t "swebench-benchmark-service:${GITHUB_SHA}" .
           docker run -d --name swebench-benchmark-service \
             -p "127.0.0.1:${SERVICE_PORT}:8001" \
             "swebench-benchmark-service:${GITHUB_SHA}"
