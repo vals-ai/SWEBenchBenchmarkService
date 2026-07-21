@@ -27,7 +27,6 @@ env:
   SERVICE_PORT: "8001"
   CONTAINER_PORT: "8001"
   HEALTH_PATH: /health
-  TUNNEL_READY_SECONDS: "300"
   NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
   NGROK_URL: ${{ secrets.NGROK_URL }}
   VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
@@ -138,8 +137,8 @@ jobs:
           ngrok "${ngrok_args[@]}" > /tmp/ngrok.log 2>&1 &
           echo "NGROK_PID=$!" >> "$GITHUB_ENV"
 
-          deadline=$((SECONDS + TUNNEL_READY_SECONDS))
-          until service_url="$(
+          for _ in {1..60}; do
+            service_url="$(
             python3 - <<'PY'
           import json
           import urllib.request
@@ -158,20 +157,22 @@ jobs:
           else:
               raise SystemExit(1)
           PY
-          )" &&
-            curl -fsS --connect-timeout 10 --max-time 20 "${service_url}${HEALTH_PATH}"; do
-            if [ "$SECONDS" -ge "$deadline" ]; then
-              cat /tmp/ngrok.log
-              if [ -n "${service_url:-}" ]; then
-                curl -v --connect-timeout 10 --max-time 20 "${service_url}${HEALTH_PATH}"
-              fi
-              exit 1
+          )" || true
+
+            if [ -n "${service_url}" ] &&
+              curl -fsS --connect-timeout 10 --max-time 20 "${service_url}${HEALTH_PATH}"; then
+              echo "SERVICE_URL=${service_url}" >> "$GITHUB_ENV"
+              echo "ngrok URL: ${service_url}"
+              exit 0
             fi
             sleep 5
           done
 
-          echo "SERVICE_URL=${service_url}" >> "$GITHUB_ENV"
-          echo "ngrok URL: ${service_url}"
+          cat /tmp/ngrok.log
+          if [ -n "${service_url:-}" ]; then
+            curl -v --connect-timeout 10 --max-time 20 "${service_url}${HEALTH_PATH}"
+          fi
+          exit 1
 
       - name: Configure Valkyrie SDK
         run: |
@@ -210,7 +211,7 @@ jobs:
           async def main() -> None:
               benchmark_name = os.environ["BENCHMARK_NAME"]
               service_url = os.environ["SERVICE_URL"]
-              deadline = time.monotonic() + int(os.environ["TUNNEL_READY_SECONDS"])
+              deadline = time.monotonic() + 300
               config = ValkyrieConfig.from_yaml()
               config.custom_benchmark_services[benchmark_name] = service_url
               entry = BenchmarkServiceEntry(name=benchmark_name, url=service_url)
