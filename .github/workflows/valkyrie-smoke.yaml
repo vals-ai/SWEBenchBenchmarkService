@@ -94,6 +94,29 @@ jobs:
           uv tool install --force "git+https://github.com/vals-ai/Valkyrie.git@prod"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      - name: Patch Valkyrie AWS session token support
+        run: |
+          set -euo pipefail
+
+          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+          valkyrie_python="${valkyrie_python#\#!}"
+
+          "$valkyrie_python" - <<'PY'
+          import inspect
+          from pathlib import Path
+
+          import valkyrie.cli.s3_config as s3_config
+
+          path = Path(inspect.getsourcefile(s3_config) or "")
+          text = path.read_text()
+          old = 'aws_default_region=config["AWS_DEFAULT_REGION"],\n    )'
+          new = 'aws_default_region=config["AWS_DEFAULT_REGION"],\n        aws_session_token=config.get("AWS_SESSION_TOKEN"),\n    )'
+          if new not in text:
+              if old not in text:
+                  raise SystemExit(f"Could not patch {path}")
+              path.write_text(text.replace(old, new))
+          PY
+
       - name: Build and run benchmark service
         run: |
           set -euo pipefail
