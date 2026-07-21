@@ -196,6 +196,43 @@ jobs:
             sleep 5
           done
 
+      - name: Show Tailscale certificate diagnostics
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          log_file = Path.home() / "tailscaled.log"
+          if not log_file.is_file():
+              print("::warning::tailscaled.log not found")
+              raise SystemExit(0)
+
+          log = log_file.read_text(errors="replace")
+          categories = {
+              "acme_rate_limit": r"rate.?limit|acme:error:rateLimited|too many certificates|HTTP 429",
+              "setdns_failure": r"SetDNS.*(?:error|failed)|failed to create DNS record",
+              "acme_account_failure": r"acme\.(?:Register|GetReg)|unexpected ACME account status",
+              "acme_order_failure": r"AuthorizeOrder|WaitOrder|CreateOrder|orderNotReady",
+              "certificate_parse_failure": r"X509KeyPair|failed to parse.*(?:certificate|private key)",
+              "certificate_domain_failure": r"does not support getting TLS certs|invalid domain|CertDomain",
+              "certificate_timeout": r"cert\([^\n]*\).*?(?:deadline exceeded|timed? out)",
+          }
+          matches = [
+              category
+              for category, pattern in categories.items()
+              if re.search(pattern, log, re.IGNORECASE)
+          ]
+          if not matches and re.search(r"cert\(|getCertPEM|acme|TLS", log, re.IGNORECASE):
+              matches.append("unclassified_certificate_error")
+
+          if matches:
+              for category in matches:
+                  print(f"TAILSCALE_CERT_DIAGNOSTIC={category}")
+          else:
+              print("TAILSCALE_CERT_DIAGNOSTIC=no_certificate_error_logged")
+          PY
+
       - name: Configure Valkyrie SDK
         run: |
           set -euo pipefail
