@@ -2,17 +2,11 @@ name: valkyrie-smoke
 
 on:
   push:
-    branches:
-      - jf/auto-ci-test
-      - dev
-      - prod
-      - main
   workflow_dispatch:
     inputs:
       model:
         description: "Optional model override, e.g. openai/gpt-5.5"
         required: false
-        default: openai/gpt-5.5
         type: string
 
 permissions:
@@ -24,18 +18,20 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-  BENCHMARK_NAME: ${{ vars.BENCHMARK_NAME }}
-  SMOKE_DATASET: vals_index
-  SMOKE_TASK_ID: astropy__astropy-12907
-  SMOKE_AGENT: ${{ vars.SMOKE_AGENT || 'mini_sweagent' }}
-  SMOKE_MODEL: ${{ github.event.inputs.model || vars.VALKYRIE_SMOKE_MODEL || 'openai/gpt-5.5' }}
-  SERVICE_PORT: "8001"
-  HEALTH_PATH: /health
-  FUNNEL_READY_SECONDS: ${{ vars.FUNNEL_READY_SECONDS || '300' }}
-  TAILSCALE_HOSTNAME: ${{ vars.TAILSCALE_HOSTNAME || 'swebench-benchmark-smoke' }}
-  VALKYRIE_AWS_ROLE_ARN: ${{ vars.VALKYRIE_AWS_ROLE_ARN || 'arn:aws:iam::533328366429:role/github-actions-swebench-benchmark-service-smoke' }}
-  VALKYRIE_CONFIG_SECRET_ID: ${{ vars.VALKYRIE_CONFIG_SECRET_ID || 'devBenchmarksInfraValkyrieConfig' }}
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  BENCHMARK_NAME: ${{ secrets.BENCHMARK_NAME }}
+  SMOKE_DATASET: ${{ secrets.SMOKE_DATASET }}
+  SMOKE_TASK_ID: ${{ secrets.SMOKE_TASK_ID }}
+  SMOKE_AGENT: ${{ secrets.SMOKE_AGENT }}
+  SMOKE_MODEL: ${{ github.event.inputs.model || secrets.SMOKE_MODEL }}
+  SERVICE_PORT: ${{ secrets.BENCHMARK_SERVICE_PORT }}
+  CONTAINER_PORT: ${{ secrets.BENCHMARK_CONTAINER_PORT }}
+  HEALTH_PATH: ${{ secrets.BENCHMARK_HEALTH_PATH }}
+  FUNNEL_READY_SECONDS: ${{ secrets.FUNNEL_READY_SECONDS }}
+  TAILSCALE_TAGS: ${{ secrets.TAILSCALE_TAGS }}
+  TAILSCALE_HOSTNAME: ${{ secrets.TAILSCALE_HOSTNAME }}
+  VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
+  VALKYRIE_CONFIG_SECRET_ID: ${{ secrets.VALKYRIE_CONFIG_SECRET_ID }}
 
 jobs:
   smoke:
@@ -63,19 +59,12 @@ jobs:
           import re
           import sys
 
-          repo_name = os.environ["GITHUB_REPOSITORY"].split("/", 1)[1]
           benchmark_name = os.environ.get("BENCHMARK_NAME", "").strip()
           if not benchmark_name:
-              benchmark_name = re.sub(
-                  r"(?i)([-_]?benchmark[-_]?service|benchmarkservice)$",
-                  "",
-                  repo_name,
-              )
-              benchmark_name = re.sub(r"[^a-z0-9-]+", "-", benchmark_name.replace("_", "-").lower())
-              benchmark_name = re.sub(r"-+", "-", benchmark_name).strip("-")
+              sys.exit("BENCHMARK_NAME GitHub secret is required")
 
           if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", benchmark_name):
-              sys.exit(f"Invalid benchmark name derived from repo: {benchmark_name!r}")
+              sys.exit(f"Invalid benchmark name from BENCHMARK_NAME GitHub secret: {benchmark_name!r}")
 
           container_name = f"{benchmark_name}-benchmark-service"
           print(f"BENCHMARK_NAME={benchmark_name}")
@@ -84,8 +73,8 @@ jobs:
 
       - name: Validate smoke configuration
         env:
-          TS_OAUTH_CLIENT_ID: ${{ vars.TS_OAUTH_CLIENT_ID || secrets.TS_OAUTH_CLIENT_ID }}
-          TS_AUDIENCE: ${{ vars.TS_AUDIENCE || secrets.TS_AUDIENCE }}
+          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
         run: |
           set -euo pipefail
 
@@ -97,9 +86,20 @@ jobs:
             fi
           }
 
+          require_env AWS_REGION
+          require_env BENCHMARK_NAME
+          require_env SMOKE_DATASET
+          require_env SMOKE_TASK_ID
+          require_env SMOKE_AGENT
+          require_env SMOKE_MODEL
+          require_env SERVICE_PORT
+          require_env CONTAINER_PORT
+          require_env HEALTH_PATH
+          require_env FUNNEL_READY_SECONDS
+          require_env TAILSCALE_TAGS
+          require_env TAILSCALE_HOSTNAME
           require_env VALKYRIE_AWS_ROLE_ARN
           require_env VALKYRIE_CONFIG_SECRET_ID
-          require_env BENCHMARK_NAME
           require_env TS_OAUTH_CLIENT_ID
           require_env TS_AUDIENCE
 
@@ -114,9 +114,9 @@ jobs:
       - name: Join tailnet
         uses: tailscale/github-action@v4
         with:
-          oauth-client-id: ${{ vars.TS_OAUTH_CLIENT_ID || secrets.TS_OAUTH_CLIENT_ID }}
-          audience: ${{ vars.TS_AUDIENCE || secrets.TS_AUDIENCE }}
-          tags: tag:github-ci
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: ${{ env.TAILSCALE_TAGS }}
           hostname: ${{ env.TAILSCALE_HOSTNAME }}
           version: latest
 
@@ -131,7 +131,7 @@ jobs:
 
           docker build --quiet -t "${CONTAINER_NAME}:${GITHUB_SHA}" .
           docker run -d --name "${CONTAINER_NAME}" \
-            -p "127.0.0.1:${SERVICE_PORT}:8001" \
+            -p "127.0.0.1:${SERVICE_PORT}:${CONTAINER_PORT}" \
             "${CONTAINER_NAME}:${GITHUB_SHA}"
 
           for _ in {1..60}; do
