@@ -25,15 +25,15 @@ concurrency:
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
-  BENCHMARK_NAME: swebench
+  BENCHMARK_NAME: ${{ vars.BENCHMARK_NAME }}
   SMOKE_DATASET: vals_index
   SMOKE_TASK_ID: astropy__astropy-12907
   SMOKE_AGENT: ${{ vars.SMOKE_AGENT || 'mini_sweagent' }}
   SMOKE_MODEL: ${{ github.event.inputs.model || vars.VALKYRIE_SMOKE_MODEL || 'openai/gpt-5.5' }}
   SERVICE_PORT: "8001"
   HEALTH_PATH: /health
-  FUNNEL_READY_SECONDS: "90"
-  TAILSCALE_HOSTNAME: swebench-benchmark-smoke
+  FUNNEL_READY_SECONDS: ${{ vars.FUNNEL_READY_SECONDS || '300' }}
+  TAILSCALE_HOSTNAME: ${{ vars.TAILSCALE_HOSTNAME || 'swebench-benchmark-smoke' }}
   VALKYRIE_AWS_ROLE_ARN: ${{ vars.VALKYRIE_AWS_ROLE_ARN || 'arn:aws:iam::533328366429:role/github-actions-swebench-benchmark-service-smoke' }}
   VALKYRIE_CONFIG_SECRET_ID: ${{ vars.VALKYRIE_CONFIG_SECRET_ID || 'devBenchmarksInfraValkyrieConfig' }}
 
@@ -54,6 +54,34 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
+      - name: Resolve smoke configuration
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import os
+          import re
+          import sys
+
+          repo_name = os.environ["GITHUB_REPOSITORY"].split("/", 1)[1]
+          benchmark_name = os.environ.get("BENCHMARK_NAME", "").strip()
+          if not benchmark_name:
+              benchmark_name = re.sub(
+                  r"(?i)([-_]?benchmark[-_]?service|benchmarkservice)$",
+                  "",
+                  repo_name,
+              )
+              benchmark_name = re.sub(r"[^a-z0-9-]+", "-", benchmark_name.replace("_", "-").lower())
+              benchmark_name = re.sub(r"-+", "-", benchmark_name).strip("-")
+
+          if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", benchmark_name):
+              sys.exit(f"Invalid benchmark name derived from repo: {benchmark_name!r}")
+
+          container_name = f"{benchmark_name}-benchmark-service"
+          print(f"BENCHMARK_NAME={benchmark_name}")
+          print(f"CONTAINER_NAME={container_name}")
+          PY
+
       - name: Validate smoke configuration
         env:
           TS_OAUTH_CLIENT_ID: ${{ vars.TS_OAUTH_CLIENT_ID || secrets.TS_OAUTH_CLIENT_ID }}
@@ -71,6 +99,7 @@ jobs:
 
           require_env VALKYRIE_AWS_ROLE_ARN
           require_env VALKYRIE_CONFIG_SECRET_ID
+          require_env BENCHMARK_NAME
           require_env TS_OAUTH_CLIENT_ID
           require_env TS_AUDIENCE
 
@@ -91,49 +120,26 @@ jobs:
           hostname: ${{ env.TAILSCALE_HOSTNAME }}
           version: latest
 
-      - name: Install Valkyrie prod CLI
+      - name: Install Valkyrie prod package
         run: |
           uv tool install --force "git+https://github.com/vals-ai/Valkyrie.git@prod"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Patch Valkyrie AWS session token support
-        run: |
-          set -euo pipefail
-
-          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
-          valkyrie_python="${valkyrie_python#\#!}"
-
-          "$valkyrie_python" - <<'PY'
-          import inspect
-          from pathlib import Path
-
-          import valkyrie.cli.s3_config as s3_config
-
-          path = Path(inspect.getsourcefile(s3_config) or "")
-          text = path.read_text()
-          old = 'aws_default_region=config["AWS_DEFAULT_REGION"],\n    )'
-          new = 'aws_default_region=config["AWS_DEFAULT_REGION"],\n        aws_session_token=config.get("AWS_SESSION_TOKEN"),\n    )'
-          if new not in text:
-              if old not in text:
-                  raise SystemExit(f"Could not patch {path}")
-              path.write_text(text.replace(old, new))
-          PY
 
       - name: Build and run benchmark service
         run: |
           set -euo pipefail
 
-          docker build --quiet -t "swebench-benchmark-service:${GITHUB_SHA}" .
-          docker run -d --name swebench-benchmark-service \
+          docker build --quiet -t "${CONTAINER_NAME}:${GITHUB_SHA}" .
+          docker run -d --name "${CONTAINER_NAME}" \
             -p "127.0.0.1:${SERVICE_PORT}:8001" \
-            "swebench-benchmark-service:${GITHUB_SHA}"
+            "${CONTAINER_NAME}:${GITHUB_SHA}"
 
           for _ in {1..60}; do
             curl -fsS "http://127.0.0.1:${SERVICE_PORT}${HEALTH_PATH}" && exit 0
             sleep 2
           done
 
-          docker logs swebench-benchmark-service
+          docker logs "${CONTAINER_NAME}"
           exit 1
 
       - name: Expose benchmark service
@@ -152,10 +158,21 @@ jobs:
       - name: Show Funnel URL
         run: sudo tailscale funnel status
 
-      - name: Wait for Funnel propagation
-        run: sleep "${FUNNEL_READY_SECONDS}"
+      - name: Wait for public Funnel health
+        run: |
+          set -euo pipefail
 
-      - name: Configure Valkyrie
+          deadline=$((SECONDS + FUNNEL_READY_SECONDS))
+          until curl -fsS --connect-timeout 10 --max-time 20 "${SERVICE_URL}${HEALTH_PATH}"; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              sudo tailscale funnel status
+              curl -v --connect-timeout 10 --max-time 20 "${SERVICE_URL}${HEALTH_PATH}"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Configure Valkyrie SDK
         run: |
           set -euo pipefail
 
@@ -173,70 +190,134 @@ jobs:
             printf 'AWS_DEFAULT_REGION: "%s"\n' "${AWS_REGION}"
           } >> ~/.config/valkyrie/valkyrie.yaml
 
-          valkyrie config service set "${BENCHMARK_NAME}" "${SERVICE_URL}"
+      - name: Wait for tracker to reach benchmark service
+        run: |
+          set -euo pipefail
+
+          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+          valkyrie_python="${valkyrie_python#\#!}"
+
+          "$valkyrie_python" - <<'PY'
+          import asyncio
+          import os
+          import sys
+          import time
+
+          from valkyrie.sdk import BenchmarkServiceEntry, BenchmarkServicesResponse, ValkyrieClient, ValkyrieConfig
+          from valkyrie.sdk.models.services import BenchmarkServicesRequest
+
+          async def main() -> None:
+              benchmark_name = os.environ["BENCHMARK_NAME"]
+              service_url = os.environ["SERVICE_URL"]
+              deadline = time.monotonic() + int(os.environ["FUNNEL_READY_SECONDS"])
+              config = ValkyrieConfig.from_yaml()
+              config.custom_benchmark_services[benchmark_name] = service_url
+              entry = BenchmarkServiceEntry(name=benchmark_name, url=service_url)
+              request = BenchmarkServicesRequest(services=[entry])
+
+              async with ValkyrieClient(config) as client:
+                  while True:
+                      response = await client.request_model(
+                          "POST",
+                          "/benchmark-services",
+                          BenchmarkServicesResponse,
+                          json=request.model_dump(mode="json"),
+                      )
+                      health = response.services[0]
+                      if health.healthy:
+                          print(f"Tracker reached {benchmark_name} at {service_url} in {health.latency_ms} ms")
+                          return
+
+                      print(f"Tracker cannot reach {benchmark_name} at {service_url}: {health.error}")
+                      if time.monotonic() >= deadline:
+                          sys.exit("Tracker could not reach benchmark service before timeout")
+                      await asyncio.sleep(10)
+
+          asyncio.run(main())
+          PY
 
       - name: Start one-task Valkyrie smoke run
         run: |
           set -euo pipefail
 
-          args=(
-            run start
-            --agent "${SMOKE_AGENT}"
-            --benchmark "${BENCHMARK_NAME}"
-            --dataset "${SMOKE_DATASET}"
-            --task-ids "${SMOKE_TASK_ID}"
-            --concurrency 1
-            --label "ci-${GITHUB_REF_NAME}-${GITHUB_SHA}"
-          )
+          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+          valkyrie_python="${valkyrie_python#\#!}"
 
-          if [ -n "${SMOKE_MODEL:-}" ]; then
-            args+=(--model "${SMOKE_MODEL}")
-          fi
+          "$valkyrie_python" - <<'PY'
+          import asyncio
+          import os
 
-          set +e
-          output="$(valkyrie "${args[@]}" 2>&1)"
-          exit_code="$?"
-          set -e
+          from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
 
-          printf '%s\n' "$output"
-          if [ "$exit_code" -ne 0 ]; then
-            exit "$exit_code"
-          fi
+          async def main() -> None:
+              benchmark_name = os.environ["BENCHMARK_NAME"]
+              service_url = os.environ["SERVICE_URL"]
+              model = os.environ.get("SMOKE_MODEL") or None
+              config = ValkyrieConfig.from_yaml()
+              config.custom_benchmark_services[benchmark_name] = service_url
 
-          run_id="$(printf '%s\n' "$output" | sed -nE 's/.*Run ID:[[:space:]]+([0-9a-f-]{36}).*/\1/p' | tail -1)"
-          test -n "$run_id"
-          echo "VALKYRIE_RUN_ID=${run_id}" >> "$GITHUB_ENV"
+              print(f"Starting {benchmark_name} smoke run against {service_url}")
+              async with ValkyrieClient(config) as client:
+                  run = await client.runs.start(
+                      agent=os.environ["SMOKE_AGENT"],
+                      benchmark=benchmark_name,
+                      model=model,
+                      dataset=os.environ["SMOKE_DATASET"],
+                      task_ids=[os.environ["SMOKE_TASK_ID"]],
+                      concurrency=1,
+                      label=f"ci-{os.environ['GITHUB_REF_NAME']}-{os.environ['GITHUB_SHA']}",
+                  )
+
+              print(f"Run ID: {run.benchmark_id}")
+              print(f"Task count: {run.task_count}")
+              with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env_file:
+                  print(f"VALKYRIE_RUN_ID={run.benchmark_id}", file=env_file)
+
+          asyncio.run(main())
+          PY
 
       - name: Wait for smoke result
         run: |
           set -euo pipefail
 
-          for _ in {1..90}; do
-            valkyrie run fetch "${VALKYRIE_RUN_ID}" --format json > /tmp/valkyrie-run.json
-            cat /tmp/valkyrie-run.json
+          valkyrie_python="$(head -n 1 "$(command -v valkyrie)")"
+          valkyrie_python="${valkyrie_python#\#!}"
 
-            status="$(python3 -c 'import json; print(str(json.load(open("/tmp/valkyrie-run.json")).get("status", "")).upper())')"
-            case "$status" in
-              FINISHED|COMPLETED|SUCCESS|SUCCEEDED) break ;;
-              ERROR|FAILED|STOPPED) exit 1 ;;
-            esac
-
-            sleep 30
-          done
-
-          python3 - <<'PY'
-          import json
+          "$valkyrie_python" - <<'PY'
+          import asyncio
+          import os
           import sys
+          from uuid import UUID
 
-          with open("/tmp/valkyrie-run.json") as file:
-              run = json.load(file)
+          from valkyrie.sdk import BenchmarkStatus, TaskStatus, ValkyrieClient, ValkyrieConfig
 
-          status = str(run.get("status", "")).upper()
-          counts = {str(key).upper(): value for key, value in (run.get("task_state_counts") or {}).items()}
-          if status not in {"FINISHED", "COMPLETED", "SUCCESS", "SUCCEEDED"}:
-              sys.exit(f"Run did not finish successfully: {status}")
-          if counts.get("ERROR", 0) or counts.get("STOPPED", 0):
-              sys.exit(f"Smoke task failed: {counts}")
+          async def main() -> None:
+              run_id = UUID(os.environ["VALKYRIE_RUN_ID"])
+              config = ValkyrieConfig.from_yaml()
+
+              final_status = None
+              final_counts: dict[str, int] = {}
+              async with ValkyrieClient(config) as client:
+                  for _ in range(90):
+                      run = await client.runs.fetch(run_id)
+                      final_status = run.details.status
+                      final_counts = {
+                          status.value if isinstance(status, TaskStatus) else str(status): count
+                          for status, count in run.details.task_breakdown.items()
+                      }
+                      print(f"{final_status.value}: {final_counts}")
+                      if final_status == BenchmarkStatus.FINISHED:
+                          break
+                      if final_status in {BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED}:
+                          sys.exit(1)
+                      await asyncio.sleep(30)
+
+              if final_status != BenchmarkStatus.FINISHED:
+                  sys.exit(f"Run did not finish successfully: {final_status}")
+              if final_counts.get(TaskStatus.ERROR.value, 0) or final_counts.get(TaskStatus.STOPPED.value, 0):
+                  sys.exit(f"Smoke task failed: {final_counts}")
+
+          asyncio.run(main())
           PY
 
       - name: Stop Tailscale Funnel
