@@ -15,7 +15,7 @@ permissions:
 
 concurrency:
   group: valkyrie-smoke
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   AWS_REGION: us-east-1
@@ -291,8 +291,12 @@ jobs:
           import sys
           from uuid import UUID
 
+          from tracker.types import FinalViewResponse
           from valkyrie.sdk import BenchmarkStatus, TaskStatus, ValkyrieClient, ValkyrieConfig
           from valkyrie.sdk.errors import ValkyrieAPIError
+
+          def status_value(status: object) -> str:
+              return status.value if hasattr(status, "value") else str(status)
 
           async def main() -> None:
               benchmark_name = os.environ["BENCHMARK_NAME"]
@@ -310,7 +314,35 @@ jobs:
                           run = await client.runs.fetch(run_id)
                       except ValkyrieAPIError as error:
                           last_fetch_error = error
-                          print(f"Could not fetch smoke run yet: {error}")
+                          try:
+                              final_view = await client.request_model(
+                                  "GET",
+                                  "/retrieve-results",
+                                  FinalViewResponse,
+                                  params={"benchmark_id": str(run_id), "s3": False},
+                              )
+                          except ValkyrieAPIError as results_error:
+                              print(f"Could not fetch smoke run yet: {error}; results fallback: {results_error}")
+                              await asyncio.sleep(30)
+                              continue
+
+                          final_status_value = status_value(final_view.status)
+                          if final_status_value == BenchmarkStatus.FINISHED.value:
+                              error_count = len(final_view.task_errors or {})
+                              stopped_count = len(final_view.tasks_stopped or [])
+                              print(
+                                  f"{final_status_value}: "
+                                  f"results={len(final_view.evaluation_results or {})}, "
+                                  f"task_errors={error_count}, stopped={stopped_count}"
+                              )
+                              if error_count or stopped_count:
+                                  sys.exit(f"Smoke task failed: task_errors={error_count}, stopped={stopped_count}")
+                              return
+                          if final_status_value in {BenchmarkStatus.ERROR.value, BenchmarkStatus.STOPPED.value}:
+                              message = (final_view.error_message or "").splitlines()[0]
+                              sys.exit(f"Smoke run failed with {final_status_value}: {message}")
+
+                          print(f"Could not fetch smoke run yet: {error}; results status: {final_status_value}")
                           await asyncio.sleep(30)
                           continue
 
