@@ -32,8 +32,8 @@ env:
   SMOKE_MODEL: ${{ github.event.inputs.model || vars.VALKYRIE_SMOKE_MODEL || 'openai/gpt-5.5' }}
   SERVICE_PORT: "8001"
   HEALTH_PATH: /health
-  VALKYRIE_AWS_ROLE_ARN: ${{ vars.VALKYRIE_AWS_ROLE_ARN }}
-  VALKYRIE_CONFIG_SECRET_ID: ${{ vars.VALKYRIE_CONFIG_SECRET_ID }}
+  VALKYRIE_AWS_ROLE_ARN: ${{ vars.VALKYRIE_AWS_ROLE_ARN || 'arn:aws:iam::533328366429:role/github-actions-swebench-benchmark-service-smoke' }}
+  VALKYRIE_CONFIG_SECRET_ID: ${{ vars.VALKYRIE_CONFIG_SECRET_ID || 'devBenchmarksInfraValkyrieConfig' }}
 
 jobs:
   smoke:
