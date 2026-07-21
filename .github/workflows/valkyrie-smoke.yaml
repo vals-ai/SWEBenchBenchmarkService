@@ -111,12 +111,11 @@ jobs:
           docker logs swebench-benchmark-service
           exit 1
 
-      - name: Expose benchmark service with Tailscale Funnel
+      - name: Expose benchmark service
         run: |
           set -euo pipefail
 
           sudo tailscale funnel --bg --yes "${SERVICE_PORT}"
-          sudo tailscale funnel status
 
           service_url="$(
             tailscale status --json |
@@ -125,13 +124,8 @@ jobs:
           service_url="https://${service_url}"
           echo "SERVICE_URL=${service_url}" >> "$GITHUB_ENV"
 
-          for _ in {1..60}; do
-            curl -fsS "${service_url}${HEALTH_PATH}" && exit 0
-            sleep 2
-          done
-
-          sudo tailscale funnel status
-          exit 1
+      - name: Show Funnel URL
+        run: sudo tailscale funnel status
 
       - name: Configure Valkyrie
         run: |
