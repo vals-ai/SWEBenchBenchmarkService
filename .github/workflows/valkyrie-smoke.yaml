@@ -295,9 +295,6 @@ jobs:
           from valkyrie.sdk import BenchmarkStatus, TaskStatus, ValkyrieClient, ValkyrieConfig
           from valkyrie.sdk.errors import ValkyrieAPIError
 
-          def status_value(status: object) -> str:
-              return status.value if hasattr(status, "value") else str(status)
-
           async def main() -> None:
               benchmark_name = os.environ["BENCHMARK_NAME"]
               service_url = os.environ["SERVICE_URL"]
@@ -326,7 +323,7 @@ jobs:
                               await asyncio.sleep(30)
                               continue
 
-                          final_status_value = status_value(final_view.status)
+                          final_status_value = final_view.status.value
                           if final_status_value == BenchmarkStatus.FINISHED.value:
                               error_count = len(final_view.task_errors or {})
                               stopped_count = len(final_view.tasks_stopped or [])
