@@ -50,28 +50,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
-      - name: Resolve smoke configuration
-        run: |
-          set -euo pipefail
-
-          python3 - <<'PY' >> "$GITHUB_ENV"
-          import os
-          import re
-          import sys
-
-          benchmark_name = os.environ.get("BENCHMARK_NAME", "").strip()
-          if not benchmark_name:
-              sys.exit("BENCHMARK_NAME GitHub secret is required")
-
-          if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", benchmark_name):
-              sys.exit(f"Invalid benchmark name from BENCHMARK_NAME GitHub secret: {benchmark_name!r}")
-
-          container_name = f"{benchmark_name}-benchmark-service"
-          print(f"BENCHMARK_NAME={benchmark_name}")
-          print(f"CONTAINER_NAME={container_name}")
-          PY
-
-      - name: Validate smoke configuration
+      - name: Validate and resolve smoke configuration
         env:
           TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
@@ -103,7 +82,23 @@ jobs:
           require_env TS_OAUTH_CLIENT_ID
           require_env TS_AUDIENCE
 
-          exit "$missing"
+          if [ "$missing" -ne 0 ]; then
+            exit "$missing"
+          fi
+
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import os
+          import re
+          import sys
+
+          benchmark_name = os.environ["BENCHMARK_NAME"].strip()
+          if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", benchmark_name):
+              sys.exit(f"Invalid benchmark name from BENCHMARK_NAME GitHub secret: {benchmark_name!r}")
+
+          container_name = f"{benchmark_name}-benchmark-service"
+          print(f"BENCHMARK_NAME={benchmark_name}")
+          print(f"CONTAINER_NAME={container_name}")
+          PY
 
       - name: Configure AWS
         uses: aws-actions/configure-aws-credentials@v4
@@ -359,4 +354,7 @@ jobs:
 
       - name: Stop Tailscale Funnel
         if: always()
-        run: sudo tailscale funnel reset || true
+        run: |
+          if command -v tailscale >/dev/null 2>&1; then
+            sudo tailscale funnel reset || true
+          fi
