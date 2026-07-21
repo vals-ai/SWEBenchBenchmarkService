@@ -20,7 +20,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: valkyrie-smoke-${{ github.ref }}
+  group: valkyrie-smoke
   cancel-in-progress: false
 
 env:
@@ -32,6 +32,8 @@ env:
   SMOKE_MODEL: ${{ github.event.inputs.model || vars.VALKYRIE_SMOKE_MODEL || 'openai/gpt-5.5' }}
   SERVICE_PORT: "8001"
   HEALTH_PATH: /health
+  FUNNEL_READY_SECONDS: "90"
+  TAILSCALE_HOSTNAME: swebench-benchmark-smoke
   VALKYRIE_AWS_ROLE_ARN: ${{ vars.VALKYRIE_AWS_ROLE_ARN || 'arn:aws:iam::533328366429:role/github-actions-swebench-benchmark-service-smoke' }}
   VALKYRIE_CONFIG_SECRET_ID: ${{ vars.VALKYRIE_CONFIG_SECRET_ID || 'devBenchmarksInfraValkyrieConfig' }}
 
@@ -86,7 +88,7 @@ jobs:
           oauth-client-id: ${{ vars.TS_OAUTH_CLIENT_ID || secrets.TS_OAUTH_CLIENT_ID }}
           audience: ${{ vars.TS_AUDIENCE || secrets.TS_AUDIENCE }}
           tags: tag:github-ci
-          hostname: gha-${{ github.run_id }}-${{ github.run_attempt }}
+          hostname: ${{ env.TAILSCALE_HOSTNAME }}
           version: latest
 
       - name: Install Valkyrie prod CLI
@@ -149,6 +151,9 @@ jobs:
 
       - name: Show Funnel URL
         run: sudo tailscale funnel status
+
+      - name: Wait for Funnel propagation
+        run: sleep "${FUNNEL_READY_SECONDS}"
 
       - name: Configure Valkyrie
         run: |
