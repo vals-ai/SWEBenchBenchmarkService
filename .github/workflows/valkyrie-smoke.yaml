@@ -29,7 +29,7 @@ env:
   HEALTH_PATH: /health
   NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
   NGROK_URL: ${{ secrets.NGROK_URL }}
-  SWEBENCH_EVAL_STATE_BUCKET: ${{ secrets.SWEBENCH_EVAL_STATE_BUCKET }}
+  BENCHMARK_SERVICE_ENV: ${{ secrets.BENCHMARK_SERVICE_ENV }}
   VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
   VALKYRIE_CONFIG_SECRET_ID: ${{ github.ref_name == 'prod' && 'prodBenchmarksInfraValkyrieConfig' || 'devBenchmarksInfraValkyrieConfig' }}
 
@@ -69,7 +69,7 @@ jobs:
           require_env SMOKE_MODEL
           require_env VALKYRIE_AWS_ROLE_ARN
           require_env NGROK_AUTHTOKEN
-          require_env SWEBENCH_EVAL_STATE_BUCKET
+          require_env BENCHMARK_SERVICE_ENV
 
           if [ "$missing" -ne 0 ]; then
             exit "$missing"
@@ -104,14 +104,33 @@ jobs:
         run: |
           set -euo pipefail
 
+          benchmark_env_file="${RUNNER_TEMP}/benchmark-service.env"
+          umask 077
+          printf '%s\n' "${BENCHMARK_SERVICE_ENV}" > "${benchmark_env_file}"
+          python3 - "${benchmark_env_file}" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          env_path = Path(sys.argv[1])
+          key_pattern = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+          for line_number, line in enumerate(env_path.read_text().splitlines(), start=1):
+              stripped = line.strip()
+              if not stripped or stripped.startswith("#"):
+                  continue
+              key, separator, _ = line.partition("=")
+              if not separator or not key_pattern.fullmatch(key):
+                  sys.exit(f"Invalid BENCHMARK_SERVICE_ENV line {line_number}: expected KEY=value")
+          PY
+
           docker build --quiet -t "${CONTAINER_NAME}:${GITHUB_SHA}" .
           docker run -d --name "${CONTAINER_NAME}" \
+            --env-file "${benchmark_env_file}" \
             -e AWS_ACCESS_KEY_ID \
             -e AWS_SECRET_ACCESS_KEY \
             -e AWS_SESSION_TOKEN \
             -e AWS_REGION="${AWS_REGION}" \
             -e AWS_DEFAULT_REGION="${AWS_REGION}" \
-            -e SWEBENCH_EVAL_STATE_BUCKET \
             -p "127.0.0.1:${SERVICE_PORT}:${CONTAINER_PORT}" \
             "${CONTAINER_NAME}:${GITHUB_SHA}"
 
