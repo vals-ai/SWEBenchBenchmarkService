@@ -2,6 +2,8 @@ name: valkyrie-smoke
 
 on:
   push:
+    branches:
+      - prod
   workflow_dispatch:
     inputs:
       model:
@@ -15,7 +17,7 @@ permissions:
 
 jobs:
   smoke:
-    uses: vals-ai/.github/.github/workflows/benchmark-service-smoke.yaml@jf/reusable-benchmark-service-smoke
+    uses: vals-ai/.github/.github/workflows/benchmark-service-smoke.yaml@main
     secrets:
       VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
       NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
