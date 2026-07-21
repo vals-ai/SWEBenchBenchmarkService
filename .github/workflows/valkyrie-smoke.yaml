@@ -292,16 +292,28 @@ jobs:
           from uuid import UUID
 
           from valkyrie.sdk import BenchmarkStatus, TaskStatus, ValkyrieClient, ValkyrieConfig
+          from valkyrie.sdk.errors import ValkyrieAPIError
 
           async def main() -> None:
+              benchmark_name = os.environ["BENCHMARK_NAME"]
+              service_url = os.environ["SERVICE_URL"]
               run_id = UUID(os.environ["VALKYRIE_RUN_ID"])
               config = ValkyrieConfig.from_yaml()
+              config.custom_benchmark_services[benchmark_name] = service_url
 
               final_status = None
               final_counts: dict[str, int] = {}
+              last_fetch_error = None
               async with ValkyrieClient(config) as client:
                   for _ in range(90):
-                      run = await client.runs.fetch(run_id)
+                      try:
+                          run = await client.runs.fetch(run_id)
+                      except ValkyrieAPIError as error:
+                          last_fetch_error = error
+                          print(f"Could not fetch smoke run yet: {error}")
+                          await asyncio.sleep(30)
+                          continue
+
                       final_status = run.details.status
                       final_counts = {
                           status.value if isinstance(status, TaskStatus) else str(status): count
@@ -315,6 +327,8 @@ jobs:
                       await asyncio.sleep(30)
 
               if final_status != BenchmarkStatus.FINISHED:
+                  if last_fetch_error is not None:
+                      sys.exit(f"Run did not finish successfully after fetch error: {last_fetch_error}")
                   sys.exit(f"Run did not finish successfully: {final_status}")
               if final_counts.get(TaskStatus.ERROR.value, 0) or final_counts.get(TaskStatus.STOPPED.value, 0):
                   sys.exit(f"Smoke task failed: {final_counts}")
