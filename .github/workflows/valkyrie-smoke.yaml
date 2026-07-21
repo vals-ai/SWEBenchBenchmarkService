@@ -54,8 +54,8 @@ jobs:
 
       - name: Validate smoke configuration
         env:
-          TS_OAUTH_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
+          TS_OAUTH_CLIENT_ID: ${{ vars.TS_OAUTH_CLIENT_ID }}
+          TS_AUDIENCE: ${{ vars.TS_AUDIENCE }}
         run: |
           set -euo pipefail
 
@@ -83,9 +83,9 @@ jobs:
       - name: Join tailnet
         uses: tailscale/github-action@v4
         with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          audience: ${{ secrets.TS_AUDIENCE }}
-          tags: tag:ci
+          oauth-client-id: ${{ vars.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ vars.TS_AUDIENCE }}
+          tags: tag:github-ci
           hostname: gha-${{ github.run_id }}-${{ github.run_attempt }}
           version: latest
 
@@ -115,7 +115,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          tailscale funnel --bg --yes "http://127.0.0.1:${SERVICE_PORT}"
+          tailscale funnel --bg --yes "${SERVICE_PORT}"
           tailscale funnel status
 
           service_url="$(
@@ -209,3 +209,7 @@ jobs:
           if counts.get("ERROR", 0) or counts.get("STOPPED", 0):
               sys.exit(f"Smoke task failed: {counts}")
           PY
+
+      - name: Stop Tailscale Funnel
+        if: always()
+        run: tailscale funnel reset
