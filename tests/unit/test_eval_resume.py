@@ -288,6 +288,85 @@ async def test_resume_rejects_modified_persisted_patch(modified_content: bytes, 
         await load_prediction(state)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("version", True),
+        ("version", 1.0),
+        ("version", "1"),
+        ("prediction_size_bytes", True),
+        ("prediction_size_bytes", 5.0),
+        ("prediction_size_bytes", "5"),
+        ("prediction_size_bytes", 1024 * 1024 * 257),
+    ],
+)
+async def test_resume_state_rejects_non_exact_or_oversized_integer_fields(
+    field: str,
+    value: object,
+) -> None:
+    state = await persist_prediction(FakeSandbox(), "task-1", None, b"patch")
+    data = state.model_dump(mode="json")
+    data[field] = value
+
+    with pytest.raises(ValidationError, match=field):
+        EvalResumeState.model_validate(data)
+
+
+async def test_resume_verifies_artifact_before_reemitting_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    benchmark = service()
+    state = await persist_prediction(FakeSandbox(), "task-1", None, b"patch")
+    local_root = Path(os.environ["SWEBENCH_EVAL_STATE_LOCAL_DIR"])
+    (local_root / state.prediction_s3_key).write_bytes(b"tampered")
+    provider = FakeProvider()
+    use_provider(monkeypatch, provider)
+    request = EvaluateResponseRequest(
+        task_id="task-1",
+        eval_resume_state=state.model_dump(mode="json"),
+        sandbox_provider=sandbox_provider_config(),
+    )
+
+    emitted: list[StreamChunk] = []
+    with pytest.raises(ValueError, match="integrity check"):
+        async for chunk in benchmark.stream_evaluate_response(request):
+            emitted.append(chunk)
+
+    assert emitted == []
+    assert provider.create_request is None
+
+
+async def test_resume_honors_dataset_carried_by_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    benchmark = service()
+    benchmark.datasets["candidate"] = benchmark.datasets["default"]
+    state = await persist_prediction(FakeSandbox(), "task-1", "candidate", b"patch")
+    provider = FakeProvider()
+    provider.sandbox.captured_prediction = b"patch"
+    use_provider(monkeypatch, provider)
+    evaluated_datasets: list[str | None] = []
+
+    async def evaluate_prediction(
+        task_id: str,
+        sandbox: Sandbox,
+        prediction: str | None,
+        dataset: str | None = None,
+    ) -> AsyncGenerator[StreamChunk, None]:
+        evaluated_datasets.append(dataset)
+        yield StreamResultChunk(type="result", data={})
+
+    monkeypatch.setattr(benchmark, "_evaluate_prediction", evaluate_prediction)
+    request = EvaluateResponseRequest(
+        task_id="task-1",
+        dataset="candidate",
+        eval_resume_state=state.model_dump(mode="json"),
+        sandbox_provider=sandbox_provider_config(),
+    )
+
+    _ = [chunk async for chunk in benchmark.stream_evaluate_response(request)]
+
+    assert evaluated_datasets == ["candidate"]
+
+
 def test_resume_state_rejects_path_components() -> None:
     with pytest.raises(ValidationError):
         EvalResumeState(

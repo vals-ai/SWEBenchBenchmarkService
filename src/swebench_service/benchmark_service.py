@@ -203,7 +203,7 @@ class SWEBenchService(BenchmarkService):
             raise ValueError("SWE-bench eval resume requires eval_resume_state")
 
         state = EvalResumeState.model_validate(request.eval_resume_state)
-        requested_dataset = dataset or "default"
+        requested_dataset = dataset or request.dataset or "default"
         if state.task_id != request.task_id:
             raise ValueError(f"eval_resume_state task_id mismatch: {state.task_id} != {request.task_id}")
         if state.dataset != requested_dataset:
@@ -211,12 +211,12 @@ class SWEBenchService(BenchmarkService):
         if request.sandbox_provider is None:
             raise ValueError("SWE-bench eval resume requires sandbox_provider")
 
-        await self.validate_task_ids([request.task_id], dataset=dataset)
-        yield StreamEvalResumeStateChunk(type="eval_resume_state", data=state.model_dump(mode="json"))
+        await self.validate_task_ids([request.task_id], dataset=requested_dataset)
         prediction_bytes = await load_prediction(state)
+        yield StreamEvalResumeStateChunk(type="eval_resume_state", data=state.model_dump(mode="json"))
         prediction = prediction_bytes.decode("utf-8", errors="replace") or None
 
-        task_data = await self.retrieve_task(request.task_id, skip_validation=True, dataset=dataset)
+        task_data = await self.retrieve_task(request.task_id, skip_validation=True, dataset=requested_dataset)
         async with request.sandbox_provider.create_provider() as provider:
             sandbox = await provider.create_sandbox(
                 SandboxCreateRequest(
@@ -235,7 +235,7 @@ class SWEBenchService(BenchmarkService):
                 )
             )
             try:
-                async for chunk in self.setup_task(request.task_id, sandbox, dataset=dataset):
+                async for chunk in self.setup_task(request.task_id, sandbox, dataset=requested_dataset):
                     if isinstance(chunk, StreamMessageChunk):
                         yield chunk
 
@@ -257,7 +257,7 @@ class SWEBenchService(BenchmarkService):
                     request.task_id,
                     sandbox,
                     prediction,
-                    dataset=dataset,
+                    dataset=requested_dataset,
                 ):
                     yield chunk
             finally:
@@ -318,7 +318,11 @@ class SWEBenchService(BenchmarkService):
         test_output: list[str] = []
         for attempt in range(MAX_RETRIES):
             test_output = []
-            msg = "Running tests..." if attempt == 0 else f"Stream interrupted, retrying (attempt {attempt + 1}/{MAX_RETRIES})..."
+            msg = (
+                "Running tests..."
+                if attempt == 0
+                else f"Stream interrupted, retrying (attempt {attempt + 1}/{MAX_RETRIES})..."
+            )
             yield StreamMessageChunk(type="message", data=msg)
             try:
                 async for line in self.stream_command_with_watchdog(sandbox, run_command, cwd="/testbed"):
