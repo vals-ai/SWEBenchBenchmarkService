@@ -16,6 +16,7 @@ from benchmark_service.sandbox import (
     SandboxCommandError,
     SandboxCreateRequest,
     SandboxError,
+    SandboxProvider,
 )
 from benchmark_service.schemas import (
     EvaluateResponseRequest,
@@ -39,7 +40,7 @@ from swebench_service import (
     load_dataset_from_disk,
     load_vals_index_subset,
 )
-from swebench_service.eval_resume import EvalResumeState, load_prediction, persist_prediction
+from swebench_service.eval_resume import MAX_PREDICTION_BYTES, EvalResumeState, load_prediction, persist_prediction
 from swebench_service.utils import with_retry
 
 logger = logging.getLogger(__name__)
@@ -47,8 +48,9 @@ logger = logging.getLogger(__name__)
 PROBLEM_STATEMENT_PATH = "/tmp/problem_statement.txt"
 PREDICTION_PATH = "/tmp/swebench-prediction.patch"
 PREDICTION_CAPTURE_COMMAND = (
-    f"git add -N . && git diff --binary --full-index --no-ext-diff --no-textconv --no-color HEAD > {PREDICTION_PATH}"
+    "umask 077; git add -N . && git diff --binary --full-index --no-ext-diff --no-textconv --no-color HEAD"
 )
+PREDICTION_CAPTURE_PATH_PREFIX = "/tmp/swebench-prediction-capture"
 COMMAND_QUIET_SECONDS = 300.0
 EVAL_SANDBOX_CREATE_TIMEOUT_SECONDS = 600
 EVAL_SANDBOX_AUTO_STOP_MINUTES = 15
@@ -65,6 +67,30 @@ def _resume_sandbox_name(state: EvalResumeState) -> str:
 
 def watchdog_message(quiet_seconds: float) -> str:
     return f"[Debug]: No logs have been produced in the last {quiet_seconds:g} seconds, evaluation may be stuck"
+
+
+async def _delete_owned_sandbox(provider: SandboxProvider, sandbox_id: str) -> None:
+    cleanup = asyncio.create_task(provider.delete_sandbox(sandbox_id))
+    try:
+        await asyncio.shield(cleanup)
+    except asyncio.CancelledError:
+        await asyncio.shield(cleanup)
+        raise
+    except Exception:
+        logger.exception("Failed to delete SWE-bench eval-resume sandbox %s", sandbox_id)
+
+
+async def _create_owned_sandbox(
+    provider: SandboxProvider,
+    request: SandboxCreateRequest,
+) -> Sandbox:
+    creation = asyncio.create_task(provider.create_sandbox(request))
+    try:
+        return await asyncio.shield(creation)
+    except asyncio.CancelledError:
+        sandbox = await asyncio.shield(creation)
+        await _delete_owned_sandbox(provider, sandbox.id)
+        raise
 
 
 class SWEBenchService(BenchmarkService):
@@ -203,7 +229,7 @@ class SWEBenchService(BenchmarkService):
             raise ValueError("SWE-bench eval resume requires eval_resume_state")
 
         state = EvalResumeState.model_validate(request.eval_resume_state)
-        requested_dataset = dataset or "default"
+        requested_dataset = dataset or request.dataset or "default"
         if state.task_id != request.task_id:
             raise ValueError(f"eval_resume_state task_id mismatch: {state.task_id} != {request.task_id}")
         if state.dataset != requested_dataset:
@@ -211,14 +237,15 @@ class SWEBenchService(BenchmarkService):
         if request.sandbox_provider is None:
             raise ValueError("SWE-bench eval resume requires sandbox_provider")
 
-        await self.validate_task_ids([request.task_id], dataset=dataset)
-        yield StreamEvalResumeStateChunk(type="eval_resume_state", data=state.model_dump(mode="json"))
+        await self.validate_task_ids([request.task_id], dataset=requested_dataset)
         prediction_bytes = await load_prediction(state)
+        yield StreamEvalResumeStateChunk(type="eval_resume_state", data=state.model_dump(mode="json"))
         prediction = prediction_bytes.decode("utf-8", errors="replace") or None
 
-        task_data = await self.retrieve_task(request.task_id, skip_validation=True, dataset=dataset)
+        task_data = await self.retrieve_task(request.task_id, skip_validation=True, dataset=requested_dataset)
         async with request.sandbox_provider.create_provider() as provider:
-            sandbox = await provider.create_sandbox(
+            sandbox = await _create_owned_sandbox(
+                provider,
                 SandboxCreateRequest(
                     source=task_data.source,
                     resources=task_data.resources,
@@ -232,10 +259,10 @@ class SWEBenchService(BenchmarkService):
                     env_vars={},
                     auto_stop_interval=EVAL_SANDBOX_AUTO_STOP_MINUTES,
                     create_timeout=EVAL_SANDBOX_CREATE_TIMEOUT_SECONDS,
-                )
+                ),
             )
             try:
-                async for chunk in self.setup_task(request.task_id, sandbox, dataset=dataset):
+                async for chunk in self.setup_task(request.task_id, sandbox, dataset=requested_dataset):
                     if isinstance(chunk, StreamMessageChunk):
                         yield chunk
 
@@ -257,14 +284,11 @@ class SWEBenchService(BenchmarkService):
                     request.task_id,
                     sandbox,
                     prediction,
-                    dataset=dataset,
+                    dataset=requested_dataset,
                 ):
                     yield chunk
             finally:
-                try:
-                    await provider.delete_sandbox(sandbox.id)
-                except Exception:
-                    logger.exception("Failed to delete SWE-bench eval-resume sandbox %s", sandbox.id)
+                await _delete_owned_sandbox(provider, sandbox.id)
 
     async def evaluate_instance(
         self, task_id: str, sandbox: Sandbox, dataset: str | None = None
@@ -284,16 +308,40 @@ class SWEBenchService(BenchmarkService):
             yield chunk
 
     async def _capture_prediction(self, sandbox: Sandbox) -> bytes:
-        result = await with_retry(
-            sandbox,
-            lambda: sandbox.exec(
-                PREDICTION_CAPTURE_COMMAND,
-                cwd="/testbed",
-            ),
+        capture_path = f"{PREDICTION_CAPTURE_PATH_PREFIX}-{uuid4().hex}.patch"
+        capture_command = (
+            f"{PREDICTION_CAPTURE_COMMAND} > {capture_path} "
+            f"&& chmod 0400 {capture_path} && stat -c %s -- {capture_path}"
         )
-        if result.exit_code != 0:
-            raise RuntimeError(f"Failed to capture SWE-bench prediction:\n{result.output}")
-        return await sandbox.download_file(PREDICTION_PATH)
+        try:
+            result = await with_retry(
+                sandbox,
+                lambda: sandbox.exec(
+                    capture_command,
+                    cwd="/testbed",
+                ),
+            )
+            if result.exit_code != 0:
+                raise RuntimeError(f"Failed to capture SWE-bench prediction:\n{result.output}")
+            try:
+                expected_size = int(result.output.strip().splitlines()[-1])
+            except (IndexError, ValueError) as exc:
+                raise RuntimeError("Failed to read captured SWE-bench prediction size") from exc
+            if not 0 <= expected_size <= MAX_PREDICTION_BYTES:
+                raise ValueError(f"SWE-bench prediction exceeds the {MAX_PREDICTION_BYTES}-byte size limit")
+
+            prediction = await sandbox.download_file(capture_path)
+            if len(prediction) != expected_size:
+                raise RuntimeError(
+                    "Captured SWE-bench prediction changed size during download: "
+                    f"expected {expected_size} bytes, got {len(prediction)}"
+                )
+            return prediction
+        finally:
+            try:
+                await sandbox.exec(f"rm -f -- {capture_path}", cwd="/testbed")
+            except Exception:
+                logger.exception("Failed to remove SWE-bench prediction capture %s", capture_path)
 
     async def _evaluate_prediction(
         self,
@@ -318,7 +366,11 @@ class SWEBenchService(BenchmarkService):
         test_output: list[str] = []
         for attempt in range(MAX_RETRIES):
             test_output = []
-            msg = "Running tests..." if attempt == 0 else f"Stream interrupted, retrying (attempt {attempt + 1}/{MAX_RETRIES})..."
+            msg = (
+                "Running tests..."
+                if attempt == 0
+                else f"Stream interrupted, retrying (attempt {attempt + 1}/{MAX_RETRIES})..."
+            )
             yield StreamMessageChunk(type="message", data=msg)
             try:
                 async for line in self.stream_command_with_watchdog(sandbox, run_command, cwd="/testbed"):

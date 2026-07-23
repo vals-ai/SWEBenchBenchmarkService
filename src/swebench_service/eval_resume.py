@@ -7,7 +7,7 @@ import hashlib
 import os
 import re
 from pathlib import Path, PurePosixPath
-from typing import Literal, Protocol, TypedDict, cast
+from typing import Literal, NotRequired, Protocol, TypedDict, cast
 from uuid import UUID
 
 import boto3
@@ -19,14 +19,18 @@ from benchmark_service.sandbox import Sandbox
 _ARTIFACT_PREFIX = "swebench/eval-resume"
 _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+MAX_PREDICTION_BYTES = 256 * 1024 * 1024
 
 
 class _StreamingBody(Protocol):
-    def read(self) -> bytes: ...
+    def read(self, amount: int = -1) -> bytes: ...
+
+    def close(self) -> None: ...
 
 
 class _GetObjectResponse(TypedDict):
     Body: _StreamingBody
+    ContentLength: NotRequired[int]
 
 
 class _S3Client(Protocol):
@@ -53,7 +57,14 @@ class EvalResumeState(BaseModel):
     dataset: str
     prediction_s3_key: str
     prediction_sha256: str
-    prediction_size_bytes: int = Field(ge=0)
+    prediction_size_bytes: int = Field(ge=0, le=MAX_PREDICTION_BYTES)
+
+    @field_validator("version", "prediction_size_bytes", mode="before")
+    @classmethod
+    def validate_exact_integer(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("checkpoint integer fields must use exact JSON integers")
+        return value
 
     @field_validator("task_id", "dataset")
     @classmethod
@@ -112,7 +123,7 @@ async def persist_prediction(
 
 async def load_prediction(state: EvalResumeState) -> bytes:
     """Fetch and integrity-check the generated patch referenced by state."""
-    content = await _get_object(state.prediction_s3_key)
+    content = await _get_object(state.prediction_s3_key, state.prediction_size_bytes)
     if len(content) != state.prediction_size_bytes:
         raise ValueError("Persisted SWE-bench prediction failed its byte-length integrity check")
     actual_sha256 = hashlib.sha256(content).hexdigest()
@@ -185,12 +196,28 @@ async def _put_object(key: str, content: bytes) -> None:
         raise RuntimeError(f"Failed to persist SWE-bench prediction at {key}") from exc
 
 
-async def _get_object(key: str) -> bytes:
+async def _get_object(key: str, expected_size: int) -> bytes:
     if _local_root() is not None:
-        return await asyncio.to_thread(_local_path(key).read_bytes)
+        path = _local_path(key)
+
+        def read_bounded() -> bytes:
+            with path.open("rb") as handle:
+                return handle.read(expected_size + 1)
+
+        return await asyncio.to_thread(read_bounded)
 
     try:
         response = await asyncio.to_thread(_s3_client().get_object, Bucket=_bucket(), Key=key)
-        return await asyncio.to_thread(response["Body"].read)
+        body = response["Body"]
+        try:
+            content_length = response.get("ContentLength")
+            if content_length is not None and content_length > expected_size:
+                raise ValueError("Persisted SWE-bench prediction exceeds its declared byte length")
+            content = await asyncio.to_thread(body.read, expected_size + 1)
+        finally:
+            await asyncio.to_thread(body.close)
+        if len(content) > expected_size:
+            raise ValueError("Persisted SWE-bench prediction exceeds its declared byte length")
+        return content
     except (BotoCoreError, ClientError) as exc:
         raise RuntimeError(f"Failed to load SWE-bench prediction at {key}") from exc
