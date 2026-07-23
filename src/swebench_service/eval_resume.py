@@ -19,7 +19,7 @@ from benchmark_service.sandbox import Sandbox
 _ARTIFACT_PREFIX = "swebench/eval-resume"
 _SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_MAX_PREDICTION_BYTES = 256 * 1024 * 1024
+MAX_PREDICTION_BYTES = 256 * 1024 * 1024
 
 
 class _StreamingBody(Protocol):
@@ -57,7 +57,7 @@ class EvalResumeState(BaseModel):
     dataset: str
     prediction_s3_key: str
     prediction_sha256: str
-    prediction_size_bytes: int = Field(ge=0, le=_MAX_PREDICTION_BYTES)
+    prediction_size_bytes: int = Field(ge=0, le=MAX_PREDICTION_BYTES)
 
     @field_validator("version", "prediction_size_bytes", mode="before")
     @classmethod

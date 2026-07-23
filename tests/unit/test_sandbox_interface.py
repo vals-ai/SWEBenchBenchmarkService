@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import AsyncGenerator
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -41,8 +42,11 @@ class FakeSandbox(Sandbox):
 
     async def exec(self, command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
         self.commands.append((command, cwd))
-        if command == PREDICTION_CAPTURE_COMMAND:
-            self.uploads["/tmp/swebench-prediction.patch"] = b""
+        if command.startswith(PREDICTION_CAPTURE_COMMAND):
+            match = re.search(r">\s*(\S+)", command)
+            capture_path = match.group(1) if match is not None else "/tmp/swebench-prediction.patch"
+            self.uploads[capture_path] = b""
+            return ExecResult(exit_code=0, output="0")
         return ExecResult(exit_code=0, output="")
 
     async def command(
