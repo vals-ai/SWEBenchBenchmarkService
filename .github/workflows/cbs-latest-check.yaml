@@ -1,0 +1,13 @@
+name: cbs-latest-check
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cbs:
+    uses: vals-ai/.github/.github/workflows/validate-cbs-latest-tag.yaml@jf/add-cbs-latest-check
