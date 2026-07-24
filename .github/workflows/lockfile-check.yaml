@@ -10,4 +10,4 @@ permissions:
 
 jobs:
   validate:
-    uses: vals-ai/.github/.github/workflows/validate-lockfile.yaml@jf/add-lockfile-check
+    uses: vals-ai/.github/.github/workflows/validate-lockfile.yaml@main
