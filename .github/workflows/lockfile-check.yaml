@@ -9,5 +9,5 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  lockfile:
     uses: vals-ai/.github/.github/workflows/validate-lockfile.yaml@main
