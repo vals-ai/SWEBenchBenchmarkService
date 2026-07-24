@@ -10,4 +10,4 @@ permissions:
 
 jobs:
   cbs:
-    uses: vals-ai/.github/.github/workflows/validate-cbs-latest-tag.yaml@jf/add-cbs-latest-check
+    uses: vals-ai/.github/.github/workflows/validate-cbs-latest-tag.yaml@main
