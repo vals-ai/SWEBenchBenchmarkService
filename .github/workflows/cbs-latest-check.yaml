@@ -2,7 +2,8 @@ name: cbs-latest-check
 
 on:
   pull_request:
-  push:
+    branches:
+      - prod
   workflow_dispatch:
 
 permissions:
