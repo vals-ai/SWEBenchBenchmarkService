@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from types import SimpleNamespace
 
 import pytest
@@ -46,7 +46,12 @@ class FakeSandbox(Sandbox):
         return ExecResult(exit_code=0, output="")
 
     async def command(
-        self, command: str, *, cwd: str | None = None, timeout: float | None = None
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        env_vars: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
         self.commands.append((command, cwd))
         yield "setup complete"
@@ -60,7 +65,12 @@ class FakeSandbox(Sandbox):
 
 class QuietThenOutputSandbox(FakeSandbox):
     async def command(
-        self, command: str, *, cwd: str | None = None, timeout: float | None = None
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        env_vars: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
         self.commands.append((command, cwd))
         await asyncio.sleep(0.02)

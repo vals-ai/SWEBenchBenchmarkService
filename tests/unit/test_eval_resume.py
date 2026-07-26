@@ -1,4 +1,4 @@
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -62,7 +62,12 @@ class FakeSandbox(Sandbox):
         return ExecResult(exit_code=0, output="")
 
     async def command(
-        self, command: str, *, cwd: str | None = None, timeout: float | None = None
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        env_vars: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
         self.commands.append((command, cwd))
         yield "setup complete"
