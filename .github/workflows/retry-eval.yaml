@@ -192,11 +192,10 @@ jobs:
             and ((.final_evaluation.final_score // 0) > 0)
           ' "$RUNNER_TEMP/before-results.json"
 
-      - name: Retry evaluation from scratch
+      - name: Retry evaluation
         run: |
           valk run retry "$RUN_ID" \
             --task-ids astropy__astropy-12907 \
-            --from-scratch \
             --connect
 
       - name: Verify retried results
@@ -208,11 +207,25 @@ jobs:
           jq -e \
             --slurpfile before "$RUNNER_TEMP/before-results.json" \
             '
-              .status == "FINISHED"
+              . as $after
+              | .status == "FINISHED"
               and ((.task_errors // {}) | length == 0)
               and ((.evaluation_results // {}) | length == 1)
               and ((.final_evaluation.final_score // 0) > 0)
               and (.finished_at != $before[0].finished_at)
+              and (
+                $before[0].evaluation_results["astropy__astropy-12907"]
+                as $previous
+                | ($previous.task_breakdown.agent_run_duration != null)
+                  and (
+                    ($after.evaluation_results["astropy__astropy-12907"].attempts // 1)
+                    == (($previous.attempts // 1) + 1)
+                  )
+                  and (
+                    $after.evaluation_results["astropy__astropy-12907"].task_breakdown.agent_run_duration
+                    == $previous.task_breakdown.agent_run_duration
+                  )
+              )
             ' \
             "$RUNNER_TEMP/after-results.json"
 
