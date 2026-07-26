@@ -1,0 +1,21 @@
+name: retry-eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Completed Valkyrie run ID to retry evaluation for."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  retry-eval:
+    uses: vals-ai/.github/.github/workflows/retry-eval.yaml@main
+    with:
+      run_id: ${{ inputs.run_id }}
+    secrets:
+      VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
