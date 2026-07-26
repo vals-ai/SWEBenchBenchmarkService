@@ -1,0 +1,116 @@
+name: retry-eval
+
+on:
+  pull_request:
+    branches:
+      - prod
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: retry-eval-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  TRACKER_SERVICE_URL: https://benchmark-tracker-dev.vals.ai
+  VALKYRIE_CONFIG_SECRET_ID: devCIValkyrieConfigSecret
+
+jobs:
+  retry-eval:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v8.1.0
+
+      - name: Install Valkyrie
+        run: |
+          uv tool install --force "git+https://github.com/vals-ai/Valkyrie.git@jf/retry-eval-ci"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure Valkyrie
+        run: |
+          set -euo pipefail
+
+          mkdir -p ~/.config/valkyrie
+          aws secretsmanager get-secret-value \
+            --secret-id "$VALKYRIE_CONFIG_SECRET_ID" \
+            --query SecretString \
+            --output text > ~/.config/valkyrie/valkyrie.yaml
+
+          {
+            printf '\n'
+            printf 'AWS_ACCESS_KEY_ID: "%s"\n' "$AWS_ACCESS_KEY_ID"
+            printf 'AWS_SECRET_ACCESS_KEY: "%s"\n' "$AWS_SECRET_ACCESS_KEY"
+            printf 'AWS_SESSION_TOKEN: "%s"\n' "$AWS_SESSION_TOKEN"
+            printf 'AWS_DEFAULT_REGION: "%s"\n' "$AWS_REGION"
+          } >> ~/.config/valkyrie/valkyrie.yaml
+
+      - name: Start passing Swebench smoke
+        run: |
+          set -euo pipefail
+
+          valk run start \
+            --agent mini_sweagent \
+            --benchmark swebench \
+            --model openai/gpt-5.5 \
+            --dataset vals_index \
+            --task-ids astropy__astropy-12907 \
+            --concurrency 1 \
+            --label "ci-retry-eval-${{ github.sha }}" \
+            -k no_model_gateway true | tee "$RUNNER_TEMP/start.log"
+
+          run_id="$(awk '/Run ID:/ {print $NF; exit}' "$RUNNER_TEMP/start.log")"
+          test -n "$run_id"
+          echo "RUN_ID=$run_id" >> "$GITHUB_ENV"
+
+      - name: Verify passing smoke
+        run: |
+          set -euo pipefail
+
+          valk run fetch "$RUN_ID" --connect
+          valk run results "$RUN_ID" --path "$RUNNER_TEMP/before-results.json"
+
+          jq -e '
+            .status == "FINISHED"
+            and ((.task_errors // {}) | length == 0)
+            and ((.evaluation_results // {}) | length == 1)
+            and ((.final_evaluation.final_score // 0) > 0)
+          ' "$RUNNER_TEMP/before-results.json"
+
+      - name: Retry evaluation from scratch
+        run: |
+          valk run retry "$RUN_ID" \
+            --task-ids astropy__astropy-12907 \
+            --from-scratch \
+            --connect
+
+      - name: Verify retried results
+        run: |
+          set -euo pipefail
+
+          valk run results "$RUN_ID" --path "$RUNNER_TEMP/after-results.json"
+
+          jq -e \
+            --slurpfile before "$RUNNER_TEMP/before-results.json" \
+            '
+              .status == "FINISHED"
+              and ((.task_errors // {}) | length == 0)
+              and ((.evaluation_results // {}) | length == 1)
+              and ((.final_evaluation.final_score // 0) > 0)
+              and (.finished_at != $before[0].finished_at)
+            ' \
+            "$RUNNER_TEMP/after-results.json"
