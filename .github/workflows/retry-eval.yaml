@@ -15,6 +15,9 @@ concurrency:
 
 env:
   AWS_REGION: us-east-1
+  BENCHMARK_SERVICE_ENV: ${{ secrets.BENCHMARK_SERVICE_ENV }}
+  NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+  NGROK_URL: ${{ secrets.NGROK_URL }}
   TRACKER_SERVICE_URL: https://benchmark-tracker-dev.vals.ai
   VALKYRIE_CONFIG_SECRET_ID: devCIValkyrieConfigSecret
 
@@ -24,6 +27,8 @@ jobs:
     timeout-minutes: 55
 
     steps:
+      - uses: actions/checkout@v6
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -59,6 +64,82 @@ jobs:
             printf 'AWS_DEFAULT_REGION: "%s"\n' "$AWS_REGION"
           } >> ~/.config/valkyrie/valkyrie.yaml
 
+      - name: Start Swebench service
+        run: |
+          set -euo pipefail
+
+          env_file="$RUNNER_TEMP/benchmark-service.env"
+          umask 077
+          printf '%s\n' "$BENCHMARK_SERVICE_ENV" > "$env_file"
+
+          valkyrie_python="$(head -n 1 "$(command -v valk)")"
+          valkyrie_python="${valkyrie_python#\#!}"
+          "$valkyrie_python" - "$env_file" <<'PY'
+          import sys
+          from pathlib import Path
+
+          from valkyrie.sdk import ValkyrieConfig
+
+          config = ValkyrieConfig.from_yaml()
+          if config.api_key and (api_key := config.api_key.get_secret_value()):
+              print(f"::add-mask::{api_key}")
+              with Path(sys.argv[1]).open("a", encoding="utf-8") as env_file:
+                  print(f"VALS_API_KEY={api_key}", file=env_file)
+          PY
+
+          docker build -t "swebench-retry-eval:${GITHUB_SHA}" .
+          docker run -d --name swebench-retry-eval \
+            --env-file "$env_file" \
+            -e AWS_ACCESS_KEY_ID \
+            -e AWS_SECRET_ACCESS_KEY \
+            -e AWS_SESSION_TOKEN \
+            -e AWS_REGION \
+            -e AWS_DEFAULT_REGION="$AWS_REGION" \
+            -e AUTH_REQUIRED=false \
+            -p 127.0.0.1:8001:8001 \
+            "swebench-retry-eval:${GITHUB_SHA}"
+
+          for _ in {1..60}; do
+            curl -fsS http://127.0.0.1:8001/health && exit 0
+            sleep 2
+          done
+
+          docker logs swebench-retry-eval
+          exit 1
+
+      - name: Expose Swebench service
+        run: |
+          set -euo pipefail
+
+          curl -sSLo "$RUNNER_TEMP/ngrok.tgz" \
+            https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+          sudo tar -xzf "$RUNNER_TEMP/ngrok.tgz" -C /usr/local/bin
+          ngrok config add-authtoken "$NGROK_AUTHTOKEN"
+
+          ngrok_args=(http http://127.0.0.1:8001 --log stdout)
+          if [[ -n "$NGROK_URL" ]]; then
+            ngrok_args+=(--url "$NGROK_URL")
+          fi
+          ngrok "${ngrok_args[@]}" > "$RUNNER_TEMP/ngrok.log" 2>&1 &
+          echo "NGROK_PID=$!" >> "$GITHUB_ENV"
+
+          for _ in {1..60}; do
+            service_url="$(
+              curl -fsS http://127.0.0.1:4040/api/tunnels |
+                jq -r '.tunnels[] | select(.public_url | startswith("https://")) | .public_url' |
+                head -n 1
+            )" || true
+            if [[ -n "$service_url" ]] &&
+              curl -fsS --max-time 20 "$service_url/health"; then
+              echo "SERVICE_URL=$service_url" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 5
+          done
+
+          cat "$RUNNER_TEMP/ngrok.log"
+          exit 1
+
       - name: Start passing Swebench smoke
         run: |
           set -euo pipefail
@@ -75,9 +156,7 @@ jobs:
 
           async def main() -> None:
               config = ValkyrieConfig.from_yaml()
-              service_headers = {}
-              if config.api_key and (api_key := config.api_key.get_secret_value()):
-                  service_headers["X-Descope-Api-Key"] = api_key
+              config.custom_benchmark_services["swebench"] = os.environ["SERVICE_URL"]
 
               async with ValkyrieClient(config) as client:
                   run = await client.runs.start(
@@ -88,7 +167,6 @@ jobs:
                       task_ids=["astropy__astropy-12907"],
                       concurrency=1,
                       label=f"ci-retry-eval-{os.environ['GITHUB_SHA']}",
-                      service_headers=service_headers,
                       agent_kwargs={"no_model_gateway": "true"},
                   )
 
@@ -137,3 +215,9 @@ jobs:
               and (.finished_at != $before[0].finished_at)
             ' \
             "$RUNNER_TEMP/after-results.json"
+
+      - name: Stop test service
+        if: always()
+        run: |
+          kill "${NGROK_PID:-}" 2>/dev/null || true
+          docker rm -f swebench-retry-eval 2>/dev/null || true
