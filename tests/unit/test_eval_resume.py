@@ -781,6 +781,30 @@ async def test_capture_rejects_stream_growth_without_unbounded_download(
     sandbox.download_file.assert_not_awaited()
 
 
+async def test_capture_stream_supplies_finite_command_timeout() -> None:
+    benchmark = service()
+    sandbox = FakeSandbox(captured_prediction=b"bounded")
+    observed_timeouts: list[float | None] = []
+    original_command = sandbox.command
+
+    async def recording_command(
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+    ) -> AsyncGenerator[str, None]:
+        observed_timeouts.append(timeout)
+        async for chunk in original_command(command, cwd=cwd, timeout=timeout):
+            yield chunk
+
+    sandbox.command = recording_command  # type: ignore[method-assign]
+
+    assert await benchmark._capture_prediction(sandbox) == b"bounded"  # pyright: ignore[reportPrivateUsage]
+    assert len(observed_timeouts) == 1
+    timeout = observed_timeouts[0]
+    assert timeout is not None and 0 < timeout < float("inf")
+
+
 async def test_capture_rejects_patch_that_changes_declared_size_during_stream() -> None:
     benchmark = service()
     sandbox = FakeSandbox(captured_prediction=b"changed")

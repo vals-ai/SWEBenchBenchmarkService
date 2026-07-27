@@ -59,6 +59,7 @@ PREDICTION_CAPTURE_COMMAND = (
     '&& git diff --binary --full-index --no-ext-diff --no-textconv --no-color "$baseline" --'
 )
 PREDICTION_CAPTURE_PATH_PREFIX = "/tmp/swebench-prediction-capture"
+PREDICTION_CAPTURE_TIMEOUT_SECONDS = 300.0
 _BASE64_DECODE_CHUNK_CHARS = 64 * 1024
 COMMAND_QUIET_SECONDS = 300.0
 EVAL_SANDBOX_CREATE_TIMEOUT_SECONDS = 600
@@ -134,7 +135,11 @@ async def _read_sandbox_file_bounded(sandbox: Sandbox, path: str, *, limit: int)
     pending = ""
     saw_padding = False
     try:
-        async for chunk in sandbox.command(f"base64 {shlex.quote(path)}", cwd="/testbed"):
+        async for chunk in sandbox.command(
+            f"base64 {shlex.quote(path)}",
+            cwd="/testbed",
+            timeout=PREDICTION_CAPTURE_TIMEOUT_SECONDS,
+        ):
             for offset in range(0, len(chunk), _BASE64_DECODE_CHUNK_CHARS):
                 encoded = "".join(chunk[offset : offset + _BASE64_DECODE_CHUNK_CHARS].split())
                 if not encoded:
