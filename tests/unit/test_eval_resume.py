@@ -158,9 +158,9 @@ class GitSandbox(Sandbox):
 
     def _localize(self, value: str) -> str:
         localized = (
-            value.replace("/setup.sh", str(self.root / "setup.sh"))
+            value.replace("/tmp/", f"{self.remote_tmp}/")
+            .replace("/setup.sh", str(self.root / "setup.sh"))
             .replace("/testbed", str(self.repo))
-            .replace("/tmp/", f"{self.remote_tmp}/")
         )
         return re.sub(r"stat -c %s -- (\S+)", r"wc -c < \1", localized)
 
@@ -208,6 +208,18 @@ class GitSandbox(Sandbox):
 
     async def download_file(self, remote_path: str) -> bytes:
         return self._local_path(remote_path).read_bytes()
+
+
+def test_git_sandbox_localizes_paths_once_when_fixture_root_is_under_tmp() -> None:
+    sandbox = object.__new__(GitSandbox)
+    sandbox.root = Path("/tmp/swebench-fixture")
+    sandbox.repo = sandbox.root / "testbed"
+    sandbox.remote_tmp = sandbox.root / "tmp"
+
+    assert sandbox._localize("/setup.sh") == str(  # pyright: ignore[reportPrivateUsage]
+        sandbox.root / "setup.sh"
+    )
+    assert sandbox._localize("/testbed") == str(sandbox.repo)  # pyright: ignore[reportPrivateUsage]
 
 
 def service() -> SWEBenchService:
