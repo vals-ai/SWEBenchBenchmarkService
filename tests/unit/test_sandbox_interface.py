@@ -1,6 +1,6 @@
 import asyncio
 import base64
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 import re
 from types import SimpleNamespace
 
@@ -51,8 +51,14 @@ class FakeSandbox(Sandbox):
         return ExecResult(exit_code=0, output="")
 
     async def command(
-        self, command: str, *, cwd: str | None = None, timeout: float | None = None
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        env_vars: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
+        del env_vars
         self.commands.append((command, cwd))
         if command.startswith("base64 "):
             path = command.removeprefix("base64 ").strip()
@@ -69,8 +75,14 @@ class FakeSandbox(Sandbox):
 
 class QuietThenOutputSandbox(FakeSandbox):
     async def command(
-        self, command: str, *, cwd: str | None = None, timeout: float | None = None
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        env_vars: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
+        del env_vars
         self.commands.append((command, cwd))
         await asyncio.sleep(0.02)
         yield "command output"

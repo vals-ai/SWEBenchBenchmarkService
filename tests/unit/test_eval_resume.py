@@ -1,6 +1,6 @@
 import asyncio
 import base64
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 import os
 from pathlib import Path
 import re
@@ -75,8 +75,14 @@ class FakeSandbox(Sandbox):
         return ExecResult(exit_code=0, output="")
 
     async def command(
-        self, command: str, *, cwd: str | None = None, timeout: float | None = None
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        env_vars: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
+        del env_vars
         self.commands.append((command, cwd))
         if command.startswith("base64 "):
             path = command.removeprefix("base64 ").strip()
@@ -174,8 +180,14 @@ class GitSandbox(Sandbox):
         return ExecResult(exit_code=completed.returncode, output=completed.stdout)
 
     async def command(
-        self, command: str, *, cwd: str | None = None, timeout: float | None = None
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        env_vars: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
+        del env_vars
         if command.startswith("base64 "):
             self.commands.append((command, cwd))
             path = command.removeprefix("base64 ").strip()
