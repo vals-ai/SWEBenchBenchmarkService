@@ -1,9 +1,12 @@
 import asyncio
+import base64
 from collections.abc import AsyncGenerator
 import os
 from pathlib import Path
 import re
+import subprocess
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -28,6 +31,8 @@ from swebench_service.benchmark_service import (
 )
 from swebench_service.eval_resume import EvalResumeState, load_prediction, persist_prediction
 from swebench_service.schemas import EvaluationResult
+
+TEST_TASK_CONTRACT_SHA256 = "0" * 64
 
 
 class FakeSandbox(Sandbox):
@@ -73,6 +78,12 @@ class FakeSandbox(Sandbox):
         self, command: str, *, cwd: str | None = None, timeout: float | None = None
     ) -> AsyncGenerator[str, None]:
         self.commands.append((command, cwd))
+        if command.startswith("base64 "):
+            path = command.removeprefix("base64 ").strip()
+            encoded = base64.b64encode(self.uploads[path]).decode()
+            for offset in range(0, len(encoded), 73):
+                yield encoded[offset : offset + 73]
+            return
         yield "setup complete"
 
     async def upload_file(self, remote_path: str, content: bytes) -> None:
@@ -104,6 +115,89 @@ class FakeProvider(SandboxProvider):
             yield self.sandbox
 
 
+class GitSandbox(Sandbox):
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.repo = root / "testbed"
+        self.remote_tmp = root / "tmp"
+        self.remote_tmp.mkdir(parents=True)
+        self._sandbox = SimpleNamespace(
+            labels={
+                "Id": "00000000-0000-0000-0000-000000000001",
+                "Benchmark": "swebench",
+            }
+        )
+        self.commands: list[tuple[str, str | None]] = []
+
+    @property
+    def id(self) -> str:
+        return "git-sandbox"
+
+    @property
+    def name(self) -> str:
+        return "git-sandbox"
+
+    @property
+    def state(self) -> str:
+        return "started"
+
+    def _local_path(self, remote_path: str) -> Path:
+        if remote_path == "/setup.sh":
+            return self.root / "setup.sh"
+        if remote_path.startswith("/tmp/"):
+            return self.remote_tmp / remote_path.removeprefix("/tmp/")
+        if remote_path.startswith("/testbed/"):
+            return self.repo / remote_path.removeprefix("/testbed/")
+        raise AssertionError(f"unexpected remote path: {remote_path}")
+
+    def _localize(self, value: str) -> str:
+        localized = (
+            value.replace("/setup.sh", str(self.root / "setup.sh"))
+            .replace("/testbed", str(self.repo))
+            .replace("/tmp/", f"{self.remote_tmp}/")
+        )
+        return re.sub(r"stat -c %s -- (\S+)", r"wc -c < \1", localized)
+
+    async def exec(self, command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
+        del timeout
+        self.commands.append((command, cwd))
+        completed = subprocess.run(
+            self._localize(command),
+            cwd=self._localize(cwd) if cwd is not None else None,
+            shell=True,
+            executable="/bin/bash",
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        return ExecResult(exit_code=completed.returncode, output=completed.stdout)
+
+    async def command(
+        self, command: str, *, cwd: str | None = None, timeout: float | None = None
+    ) -> AsyncGenerator[str, None]:
+        if command.startswith("base64 "):
+            self.commands.append((command, cwd))
+            path = command.removeprefix("base64 ").strip()
+            encoded = base64.b64encode(self._local_path(path).read_bytes()).decode()
+            for offset in range(0, len(encoded), 73):
+                yield encoded[offset : offset + 73]
+            return
+        result = await self.exec(command, cwd=cwd, timeout=timeout)
+        if result.output:
+            yield result.output
+
+    async def upload_file(self, remote_path: str, content: bytes) -> None:
+        local_path = self._local_path(remote_path)
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        if remote_path == "/setup.sh":
+            content = self._localize(content.decode()).encode()
+        local_path.write_bytes(content)
+
+    async def download_file(self, remote_path: str) -> bytes:
+        return self._local_path(remote_path).read_bytes()
+
+
 def service() -> SWEBenchService:
     instance = SWEBenchService()
     instance.datasets = {
@@ -119,6 +213,26 @@ def service() -> SWEBenchService:
     return instance
 
 
+async def persist_for_service(
+    benchmark: SWEBenchService,
+    sandbox: Sandbox,
+    dataset: str | None,
+    prediction: bytes,
+) -> EvalResumeState:
+    task_data = await benchmark.retrieve_task("task-1", skip_validation=True, dataset=dataset)
+    return await persist_prediction(
+        sandbox,
+        "task-1",
+        dataset,
+        prediction,
+        task_contract_sha256=benchmark._task_contract_sha256(  # pyright: ignore[reportPrivateUsage]
+            "task-1",
+            dataset,
+            task_data,
+        ),
+    )
+
+
 def sandbox_provider_config() -> DaytonaProviderConfig:
     return DaytonaProviderConfig(
         DAYTONA_API_KEY="key",
@@ -132,6 +246,44 @@ def use_provider(monkeypatch: pytest.MonkeyPatch, provider: FakeProvider) -> Non
         return provider
 
     monkeypatch.setattr(DaytonaProviderConfig, "create_provider", create_provider)
+
+
+async def test_capture_uses_post_setup_baseline_for_agent_patch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    sandbox = GitSandbox(tmp_path)
+    sandbox.repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(sandbox.repo)], check=True)
+    subprocess.run(["git", "-C", str(sandbox.repo), "config", "user.email", "test@example.com"], check=True)
+    subprocess.run(["git", "-C", str(sandbox.repo), "config", "user.name", "Test"], check=True)
+    (sandbox.repo / "setup_owned.txt").write_text("base setup value\n")
+    (sandbox.repo / "agent_owned.txt").write_text("base agent value\n")
+    subprocess.run(["git", "-C", str(sandbox.repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(sandbox.repo), "commit", "-qm", "base"], check=True)
+    base_commit = subprocess.run(
+        ["git", "-C", str(sandbox.repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    benchmark = service()
+    benchmark.datasets["default"]["task-1"]["base_commit"] = base_commit
+
+    def setup_pre_install(_repo: str, _version: str) -> list[str]:
+        return ["printf 'setup change\\n' > setup_owned.txt"]
+
+    monkeypatch.setattr(service_module, "get_pre_install_commands", setup_pre_install)
+
+    _ = [chunk async for chunk in benchmark.setup_task("task-1", sandbox)]
+    (sandbox.repo / "agent_owned.txt").write_text("agent change\n")
+
+    prediction = await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
+
+    assert b"agent_owned.txt" in prediction
+    assert b"+agent change" in prediction
+    assert b"setup_owned.txt" not in prediction
 
 
 @pytest.mark.parametrize(
@@ -225,7 +377,7 @@ async def test_failed_evaluation_resumes_from_exact_persisted_patch(
 async def test_resume_deletes_sandbox_when_evaluation_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     benchmark = service()
     original_sandbox = FakeSandbox(captured_prediction=b"patch")
-    state = await persist_prediction(original_sandbox, "task-1", None, b"patch")
+    state = await persist_for_service(benchmark, original_sandbox, None, b"patch")
     provider = FakeProvider()
     provider.sandbox.captured_prediction = b"patch"
     use_provider(monkeypatch, provider)
@@ -255,7 +407,13 @@ async def test_resume_deletes_sandbox_when_evaluation_fails(monkeypatch: pytest.
 
 async def test_resume_rejects_mismatched_task_before_loading_artifact() -> None:
     benchmark = service()
-    state = await persist_prediction(FakeSandbox(), "task-1", None, b"patch")
+    state = await persist_prediction(
+        FakeSandbox(),
+        "task-1",
+        None,
+        b"patch",
+        task_contract_sha256=TEST_TASK_CONTRACT_SHA256,
+    )
     request = EvaluateResponseRequest(task_id="other-task", eval_resume_state=state.model_dump(mode="json"))
 
     with pytest.raises(ValueError, match="task_id mismatch"):
@@ -264,7 +422,13 @@ async def test_resume_rejects_mismatched_task_before_loading_artifact() -> None:
 
 async def test_resume_rejects_mismatched_dataset_before_loading_artifact() -> None:
     benchmark = service()
-    state = await persist_prediction(FakeSandbox(), "task-1", "default", b"patch")
+    state = await persist_prediction(
+        FakeSandbox(),
+        "task-1",
+        "default",
+        b"patch",
+        task_contract_sha256=TEST_TASK_CONTRACT_SHA256,
+    )
     request = EvaluateResponseRequest(
         task_id="task-1",
         dataset="vals_index",
@@ -275,9 +439,72 @@ async def test_resume_rejects_mismatched_dataset_before_loading_artifact() -> No
         _ = [chunk async for chunk in benchmark.stream_evaluate_response(request, dataset="vals_index")]
 
 
+@pytest.mark.parametrize("changed_contract", ["task_image", "setup_inputs", "evaluator"])
+async def test_resume_rejects_changed_task_contract_before_loading_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    changed_contract: str,
+) -> None:
+    benchmark = service()
+
+    async def stop_after_checkpoint(
+        task_id: str,
+        sandbox: Sandbox,
+        prediction: str | None,
+        dataset: str | None = None,
+    ) -> AsyncGenerator[StreamChunk, None]:
+        del task_id, sandbox, prediction, dataset
+        raise RuntimeError("stop after checkpoint")
+        yield StreamResultChunk(type="result", data={})
+
+    monkeypatch.setattr(benchmark, "_evaluate_prediction", stop_after_checkpoint)
+    emitted: list[StreamChunk] = []
+    with pytest.raises(RuntimeError, match="stop after checkpoint"):
+        async for chunk in benchmark.evaluate_instance("task-1", FakeSandbox()):
+            emitted.append(chunk)
+    state = EvalResumeState.model_validate(emitted[-1].data)
+
+    if changed_contract == "task_image":
+        monkeypatch.setitem(service_module.IMAGE_DIGEST_OVERRIDES, "task-1", f"sha256:{'1' * 64}")
+    elif changed_contract == "setup_inputs":
+
+        def changed_pre_install(_repo: str, _version: str) -> list[str]:
+            return ["printf 'changed setup\\n' > setup-owned.txt"]
+
+        monkeypatch.setattr(service_module, "get_pre_install_commands", changed_pre_install)
+    else:
+
+        def changed_run_command(_task_id: str) -> str:
+            return "changed evaluator command"
+
+        monkeypatch.setattr(service_module, "create_run_command", changed_run_command)
+
+    async def unexpected_load(_state: EvalResumeState) -> bytes:
+        raise AssertionError("artifact must not load before task-contract validation")
+
+    monkeypatch.setattr(service_module, "load_prediction", unexpected_load)
+    provider = FakeProvider()
+    use_provider(monkeypatch, provider)
+    request = EvaluateResponseRequest(
+        task_id="task-1",
+        eval_resume_state=state.model_dump(mode="json"),
+        sandbox_provider=sandbox_provider_config(),
+    )
+
+    with pytest.raises(ValueError, match="task contract"):
+        _ = [chunk async for chunk in benchmark.stream_evaluate_response(request)]
+
+    assert provider.create_request is None
+
+
 async def test_resume_requires_request_scoped_sandbox_provider() -> None:
     benchmark = service()
-    state = await persist_prediction(FakeSandbox(), "task-1", None, b"patch")
+    state = await persist_prediction(
+        FakeSandbox(),
+        "task-1",
+        None,
+        b"patch",
+        task_contract_sha256=TEST_TASK_CONTRACT_SHA256,
+    )
     request = EvaluateResponseRequest(task_id="task-1", eval_resume_state=state.model_dump(mode="json"))
 
     with pytest.raises(ValueError, match="requires sandbox_provider"):
@@ -289,7 +516,13 @@ async def test_resume_requires_request_scoped_sandbox_provider() -> None:
     [(b"x", "byte-length"), (b"other", "SHA-256")],
 )
 async def test_resume_rejects_modified_persisted_patch(modified_content: bytes, error: str) -> None:
-    state = await persist_prediction(FakeSandbox(), "task-1", None, b"patch")
+    state = await persist_prediction(
+        FakeSandbox(),
+        "task-1",
+        None,
+        b"patch",
+        task_contract_sha256=TEST_TASK_CONTRACT_SHA256,
+    )
     local_root = Path(os.environ["SWEBENCH_EVAL_STATE_LOCAL_DIR"])
     (local_root / state.prediction_s3_key).write_bytes(modified_content)
 
@@ -313,7 +546,13 @@ async def test_resume_state_rejects_non_exact_or_oversized_integer_fields(
     field: str,
     value: object,
 ) -> None:
-    state = await persist_prediction(FakeSandbox(), "task-1", None, b"patch")
+    state = await persist_prediction(
+        FakeSandbox(),
+        "task-1",
+        None,
+        b"patch",
+        task_contract_sha256=TEST_TASK_CONTRACT_SHA256,
+    )
     data = state.model_dump(mode="json")
     data[field] = value
 
@@ -325,7 +564,7 @@ async def test_resume_verifies_artifact_before_reemitting_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     benchmark = service()
-    state = await persist_prediction(FakeSandbox(), "task-1", None, b"patch")
+    state = await persist_for_service(benchmark, FakeSandbox(), None, b"patch")
     local_root = Path(os.environ["SWEBENCH_EVAL_STATE_LOCAL_DIR"])
     (local_root / state.prediction_s3_key).write_bytes(b"tampered")
     provider = FakeProvider()
@@ -348,7 +587,7 @@ async def test_resume_verifies_artifact_before_reemitting_checkpoint(
 async def test_resume_honors_dataset_carried_by_request(monkeypatch: pytest.MonkeyPatch) -> None:
     benchmark = service()
     benchmark.datasets["candidate"] = benchmark.datasets["default"]
-    state = await persist_prediction(FakeSandbox(), "task-1", "candidate", b"patch")
+    state = await persist_for_service(benchmark, FakeSandbox(), "candidate", b"patch")
     provider = FakeProvider()
     provider.sandbox.captured_prediction = b"patch"
     use_provider(monkeypatch, provider)
@@ -385,17 +624,30 @@ def test_resume_state_rejects_path_components() -> None:
             prediction_s3_key="swebench/eval-resume/other",
             prediction_sha256="0" * 64,
             prediction_size_bytes=1,
+            task_contract_sha256=TEST_TASK_CONTRACT_SHA256,
         )
 
 
 async def test_resume_sandbox_names_are_unique() -> None:
-    state = await persist_prediction(FakeSandbox(), "task-1", None, b"patch")
+    state = await persist_prediction(
+        FakeSandbox(),
+        "task-1",
+        None,
+        b"patch",
+        task_contract_sha256=TEST_TASK_CONTRACT_SHA256,
+    )
 
     assert _resume_sandbox_name(state) != _resume_sandbox_name(state)
 
 
 async def test_resume_state_rejects_noncanonical_object_key() -> None:
-    state = await persist_prediction(FakeSandbox(), "task-1", None, b"patch")
+    state = await persist_prediction(
+        FakeSandbox(),
+        "task-1",
+        None,
+        b"patch",
+        task_contract_sha256=TEST_TASK_CONTRACT_SHA256,
+    )
     data = state.model_dump(mode="json")
     data["prediction_s3_key"] = "swebench/eval-resume/other.patch"
 
@@ -414,7 +666,10 @@ async def test_upload_failure_does_not_start_evaluation_or_emit_checkpoint(
         task_id: str,
         dataset: str | None,
         prediction: bytes,
+        *,
+        task_contract_sha256: str,
     ) -> EvalResumeState:
+        del task_contract_sha256
         raise RuntimeError("injected upload failure")
 
     async def evaluation(
@@ -442,9 +697,9 @@ async def test_upload_failure_does_not_start_evaluation_or_emit_checkpoint(
 
 async def test_empty_prediction_resumes_without_git_apply(monkeypatch: pytest.MonkeyPatch) -> None:
     benchmark = service()
-    state = await persist_prediction(
+    state = await persist_for_service(
+        benchmark,
         FakeSandbox(captured_prediction=b""),
-        "task-1",
         None,
         b"",
     )
@@ -500,7 +755,33 @@ async def test_capture_rejects_oversized_remote_patch_before_download() -> None:
     assert sandbox.downloads == []
 
 
-async def test_capture_rejects_patch_that_changes_size_during_download() -> None:
+async def test_capture_rejects_stream_growth_without_unbounded_download(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    benchmark = service()
+    limit = 8
+    sandbox = FakeSandbox(captured_prediction=b"x" * limit)
+
+    async def growing_command(
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+    ) -> AsyncGenerator[str, None]:
+        del command, cwd, timeout
+        yield base64.b64encode(b"x" * (limit + 1)).decode()
+
+    sandbox.command = growing_command  # type: ignore[method-assign]
+    sandbox.download_file = AsyncMock(side_effect=AssertionError("download_file must not be awaited"))  # type: ignore[method-assign]
+    monkeypatch.setattr(service_module, "MAX_PREDICTION_BYTES", limit)
+
+    with pytest.raises(ValueError, match="size limit"):
+        await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
+
+    sandbox.download_file.assert_not_awaited()
+
+
+async def test_capture_rejects_patch_that_changes_declared_size_during_stream() -> None:
     benchmark = service()
     sandbox = FakeSandbox(captured_prediction=b"changed")
 
@@ -522,8 +803,7 @@ async def test_capture_rejects_patch_that_changes_size_during_download() -> None
     with pytest.raises(RuntimeError, match="changed size"):
         await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
 
-    assert len(sandbox.downloads) == 1
-    assert sandbox.downloads[0] != PREDICTION_PATH
+    assert sandbox.downloads == []
 
 
 async def test_cancelled_resume_sandbox_creation_deletes_late_created_sandbox() -> None:

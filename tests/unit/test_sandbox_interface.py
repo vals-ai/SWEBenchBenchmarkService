@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from collections.abc import AsyncGenerator
 import re
 from types import SimpleNamespace
@@ -53,6 +54,10 @@ class FakeSandbox(Sandbox):
         self, command: str, *, cwd: str | None = None, timeout: float | None = None
     ) -> AsyncGenerator[str, None]:
         self.commands.append((command, cwd))
+        if command.startswith("base64 "):
+            path = command.removeprefix("base64 ").strip()
+            yield base64.b64encode(self.uploads[path]).decode()
+            return
         yield "setup complete"
 
     async def upload_file(self, remote_path: str, content: bytes) -> None:
@@ -134,7 +139,7 @@ async def test_evaluate_instance_excludes_watchdog_messages_from_grading(monkeyp
     - Only real command output is passed to the grader.
     """
     service = SWEBenchService()
-    service.datasets = {"default": {"task-1": {"repo": "django/django", "version": "4.2"}}}
+    service.datasets = {"default": {"task-1": {"base_commit": "abc123", "repo": "django/django", "version": "4.2"}}}
     sandbox = FakeSandbox()
     test_spec = object()
     graded_outputs: list[str] = []
@@ -182,7 +187,7 @@ async def test_evaluate_instance_grades_captured_log_file(monkeypatch: pytest.Mo
     from swebench_service.test_spec import EVAL_OUTPUT_PATH
 
     service = SWEBenchService()
-    service.datasets = {"default": {"task-1": {"repo": "sympy/sympy", "version": "1.9"}}}
+    service.datasets = {"default": {"task-1": {"base_commit": "abc123", "repo": "sympy/sympy", "version": "1.9"}}}
     graded_outputs: list[str] = []
 
     class LogFileSandbox(FakeSandbox):

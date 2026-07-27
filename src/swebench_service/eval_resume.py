@@ -58,6 +58,7 @@ class EvalResumeState(BaseModel):
     prediction_s3_key: str
     prediction_sha256: str
     prediction_size_bytes: int = Field(ge=0, le=MAX_PREDICTION_BYTES)
+    task_contract_sha256: str
 
     @field_validator("version", "prediction_size_bytes", mode="before")
     @classmethod
@@ -73,11 +74,11 @@ class EvalResumeState(BaseModel):
             raise ValueError("resume-state identifiers may contain only letters, numbers, '.', '_', and '-'")
         return value
 
-    @field_validator("prediction_sha256")
+    @field_validator("prediction_sha256", "task_contract_sha256")
     @classmethod
     def validate_sha256(cls, value: str) -> str:
         if not _SHA256.fullmatch(value):
-            raise ValueError("prediction_sha256 must be a lowercase SHA-256 digest")
+            raise ValueError("checkpoint digests must be lowercase SHA-256 values")
         return value
 
     @model_validator(mode="after")
@@ -101,6 +102,8 @@ async def persist_prediction(
     task_id: str,
     dataset: str | None,
     prediction: bytes,
+    *,
+    task_contract_sha256: str,
 ) -> EvalResumeState:
     """Persist the exact generated patch before evaluation begins."""
     labels = _sandbox_labels(sandbox)
@@ -116,6 +119,7 @@ async def persist_prediction(
         prediction_s3_key=prediction_key(benchmark_uuid, task_id, prediction_sha256),
         prediction_sha256=prediction_sha256,
         prediction_size_bytes=len(prediction),
+        task_contract_sha256=task_contract_sha256,
     )
     await _put_object(state.prediction_s3_key, prediction)
     return state
