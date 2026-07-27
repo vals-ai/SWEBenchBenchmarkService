@@ -248,10 +248,10 @@ def use_provider(monkeypatch: pytest.MonkeyPatch, provider: FakeProvider) -> Non
     monkeypatch.setattr(DaytonaProviderConfig, "create_provider", create_provider)
 
 
-async def test_capture_uses_post_setup_baseline_for_agent_patch(
+async def setup_git_sandbox_with_setup_owned_change(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-) -> None:
+) -> tuple[SWEBenchService, GitSandbox]:
     sandbox = GitSandbox(tmp_path)
     sandbox.repo.mkdir()
     subprocess.run(["git", "init", "-q", str(sandbox.repo)], check=True)
@@ -277,6 +277,25 @@ async def test_capture_uses_post_setup_baseline_for_agent_patch(
     monkeypatch.setattr(service_module, "get_pre_install_commands", setup_pre_install)
 
     _ = [chunk async for chunk in benchmark.setup_task("task-1", sandbox)]
+    return benchmark, sandbox
+
+
+async def test_capture_is_empty_before_agent_work_after_setup_owned_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    benchmark, sandbox = await setup_git_sandbox_with_setup_owned_change(monkeypatch, tmp_path)
+
+    prediction = await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
+
+    assert prediction == b""
+
+
+async def test_capture_uses_post_setup_baseline_for_agent_patch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    benchmark, sandbox = await setup_git_sandbox_with_setup_owned_change(monkeypatch, tmp_path)
     (sandbox.repo / "agent_owned.txt").write_text("agent change\n")
 
     prediction = await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
