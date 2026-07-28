@@ -94,11 +94,13 @@ class FakeSandbox(Sandbox):
     ) -> AsyncGenerator[str, None]:
         del env_vars
         self.commands.append((command, cwd))
-        if command.startswith("base64 "):
-            path = command.removeprefix("base64 ").strip()
+        if "base64 " in command:
+            path = command.split("base64 ", 1)[1].split(" && ", 1)[0].strip()
             encoded = base64.b64encode(self.uploads[path]).decode()
+            yield "SWEBENCH_PREDICTION_BASE64_BEGIN\r\n"
             for offset in range(0, len(encoded), 73):
                 yield encoded[offset : offset + 73]
+            yield "\r\nSWEBENCH_PREDICTION_BASE64_END\r\n"
             return
         yield "setup complete"
 
@@ -198,12 +200,14 @@ class GitSandbox(Sandbox):
         env_vars: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
         del env_vars
-        if command.startswith("base64 "):
+        if "base64 " in command:
             self.commands.append((command, cwd))
-            path = command.removeprefix("base64 ").strip()
+            path = command.split("base64 ", 1)[1].split(" && ", 1)[0].strip()
             encoded = base64.b64encode(self._local_path(path).read_bytes()).decode()
+            yield "SWEBENCH_PREDICTION_BASE64_BEGIN\r\n"
             for offset in range(0, len(encoded), 73):
                 yield encoded[offset : offset + 73]
+            yield "\r\nSWEBENCH_PREDICTION_BASE64_END\r\n"
             return
         result = await self.exec(command, cwd=cwd, timeout=timeout)
         if result.output:
@@ -822,7 +826,9 @@ async def test_capture_rejects_stream_growth_without_unbounded_download(
         timeout: float | None = None,
     ) -> AsyncGenerator[str, None]:
         del command, cwd, timeout
+        yield "SWEBENCH_PREDICTION_BASE64_BEGIN\r\n"
         yield base64.b64encode(b"x" * (limit + 1)).decode()
+        yield "\r\nSWEBENCH_PREDICTION_BASE64_END\r\n"
 
     sandbox.command = growing_command  # type: ignore[method-assign]
     sandbox.download_file = AsyncMock(side_effect=AssertionError("download_file must not be awaited"))  # type: ignore[method-assign]
@@ -832,6 +838,50 @@ async def test_capture_rejects_stream_growth_without_unbounded_download(
         await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
 
     sandbox.download_file.assert_not_awaited()
+
+
+async def test_capture_ignores_daytona_pty_noise() -> None:
+    benchmark = service()
+    sandbox = FakeSandbox(captured_prediction=b"bounded")
+
+    async def noisy_command(
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+    ) -> AsyncGenerator[str, None]:
+        del command, cwd, timeout
+        yield "root@sandbox:~# "
+        yield "stty -echo\r\n"
+        yield "root@sandbox:~# SWEBENCH_PREDICTION_BASE64_BEGIN\r\n"
+        yield f"{base64.b64encode(sandbox.captured_prediction).decode()}\r\n"
+        yield "SWEBENCH_PREDICTION_BASE64_END\r\n"
+
+    sandbox.command = noisy_command  # type: ignore[method-assign]
+
+    assert await benchmark._capture_prediction(sandbox) == b"bounded"  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_capture_propagates_command_failure_after_complete_frame() -> None:
+    benchmark = service()
+    sandbox = FakeSandbox(captured_prediction=b"bounded")
+
+    async def failing_command(
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+    ) -> AsyncGenerator[str, None]:
+        del command, cwd, timeout
+        yield "SWEBENCH_PREDICTION_BASE64_BEGIN\r\n"
+        yield f"{base64.b64encode(sandbox.captured_prediction).decode()}\r\n"
+        yield "SWEBENCH_PREDICTION_BASE64_END\r\n"
+        raise RuntimeError("sandbox command failed")
+
+    sandbox.command = failing_command  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="sandbox command failed"):
+        await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_capture_stream_supplies_finite_command_timeout() -> None:

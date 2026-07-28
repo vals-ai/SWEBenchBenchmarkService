@@ -60,9 +60,11 @@ class FakeSandbox(Sandbox):
     ) -> AsyncGenerator[str, None]:
         del env_vars
         self.commands.append((command, cwd))
-        if command.startswith("base64 "):
-            path = command.removeprefix("base64 ").strip()
+        if "base64 " in command:
+            path = command.split("base64 ", 1)[1].split(" && ", 1)[0].strip()
+            yield "SWEBENCH_PREDICTION_BASE64_BEGIN\r\n"
             yield base64.b64encode(self.uploads[path]).decode()
+            yield "\r\nSWEBENCH_PREDICTION_BASE64_END\r\n"
             return
         yield "setup complete"
 

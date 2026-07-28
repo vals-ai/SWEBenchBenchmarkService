@@ -60,7 +60,8 @@ PREDICTION_CAPTURE_COMMAND = (
 )
 PREDICTION_CAPTURE_PATH_PREFIX = "/tmp/swebench-prediction-capture"
 PREDICTION_CAPTURE_TIMEOUT_SECONDS = 300.0
-_BASE64_DECODE_CHUNK_CHARS = 64 * 1024
+_PREDICTION_STREAM_BEGIN = "SWEBENCH_PREDICTION_BASE64_BEGIN"
+_PREDICTION_STREAM_END = "SWEBENCH_PREDICTION_BASE64_END"
 COMMAND_QUIET_SECONDS = 300.0
 EVAL_SANDBOX_CREATE_TIMEOUT_SECONDS = 600
 EVAL_SANDBOX_AUTO_STOP_MINUTES = 15
@@ -134,38 +135,38 @@ async def _create_owned_sandbox(
 
 async def _read_sandbox_file_bounded(sandbox: Sandbox, path: str, *, limit: int) -> bytes:
     decoded = bytearray()
-    pending = ""
-    saw_padding = False
+    line_buffer = ""
+    started = False
+    ended = False
+    command = (
+        f"printf '%s\\n' {_PREDICTION_STREAM_BEGIN} && "
+        f"base64 {shlex.quote(path)} && "
+        f"printf '%s\\n' {_PREDICTION_STREAM_END}"
+    )
     try:
         async for chunk in sandbox.command(
-            f"base64 {shlex.quote(path)}",
+            command,
             cwd="/testbed",
             timeout=PREDICTION_CAPTURE_TIMEOUT_SECONDS,
         ):
-            for offset in range(0, len(chunk), _BASE64_DECODE_CHUNK_CHARS):
-                encoded = "".join(chunk[offset : offset + _BASE64_DECODE_CHUNK_CHARS].split())
-                if not encoded:
+            line_buffer += chunk.replace("\r", "")
+            while "\n" in line_buffer:
+                line, line_buffer = line_buffer.split("\n", 1)
+                value = line.strip()
+                if not started:
+                    started = value.endswith(_PREDICTION_STREAM_BEGIN)
                     continue
-                if saw_padding:
-                    raise ValueError("SWE-bench sandbox returned invalid base64 prediction data")
-                pending += encoded
-                complete = len(pending) - (len(pending) % 4)
-                while complete:
-                    remaining_probe_bytes = limit - len(decoded) + 1
-                    remaining_probe_chars = 4 * ((remaining_probe_bytes + 2) // 3)
-                    decode_chars = min(complete, _BASE64_DECODE_CHUNK_CHARS, remaining_probe_chars)
-                    encoded_batch = pending[:decode_chars]
-                    decoded.extend(b64decode(encoded_batch, validate=True))
-                    pending = pending[decode_chars:]
-                    if len(decoded) > limit:
-                        raise ValueError(f"SWE-bench prediction exceeds the {limit}-byte size limit")
-                    if "=" in encoded_batch:
-                        saw_padding = True
-                        if pending:
-                            raise ValueError("SWE-bench sandbox returned invalid base64 prediction data")
-                        break
-                    complete = len(pending) - (len(pending) % 4)
-        if pending:
+                if ended:
+                    continue
+                if value == _PREDICTION_STREAM_END:
+                    ended = True
+                    continue
+                if not value:
+                    continue
+                decoded.extend(b64decode(value, validate=True))
+                if len(decoded) > limit:
+                    raise ValueError(f"SWE-bench prediction exceeds the {limit}-byte size limit")
+        if not ended:
             raise ValueError("SWE-bench sandbox returned invalid base64 prediction data")
     except (Base64Error, UnicodeEncodeError) as exc:
         raise ValueError("SWE-bench sandbox returned invalid base64 prediction data") from exc
