@@ -15,6 +15,7 @@ from benchmark_service.sandbox import (
     ExecResult,
     Sandbox,
     SandboxCreateRequest,
+    SandboxError,
     SandboxProvider,
     SandboxQuery,
     SnapshotSource,
@@ -77,7 +78,7 @@ class FakeSandbox(Sandbox):
 
     async def exec(self, command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
         self.commands.append((command, cwd))
-        if command.startswith(PREDICTION_CAPTURE_COMMAND):
+        if PREDICTION_CAPTURE_COMMAND in command:
             match = re.search(r">\s*(\S+)", command)
             capture_path = match.group(1) if match is not None else PREDICTION_PATH
             self.uploads[capture_path] = self.captured_prediction
@@ -276,6 +277,18 @@ def sandbox_provider_config() -> DaytonaProviderConfig:
         DAYTONA_API_KEY="key",
         DAYTONA_API_URL="url",
         DAYTONA_TARGET="target",
+    )
+
+
+def resume_sandbox_request() -> SandboxCreateRequest:
+    return SandboxCreateRequest(
+        source=SnapshotSource(snapshot="snapshot"),
+        resources=Resources(vcpu=1, memory=1, disk=1),
+        name="resume",
+        labels={},
+        env_vars={},
+        auto_stop_interval=15,
+        create_timeout=600,
     )
 
 
@@ -800,7 +813,7 @@ async def test_capture_rejects_oversized_remote_patch_before_download() -> None:
         timeout: float | None = None,
     ) -> ExecResult:
         result = await original_exec(command, cwd=cwd, timeout=timeout)
-        if command.startswith(PREDICTION_CAPTURE_COMMAND):
+        if PREDICTION_CAPTURE_COMMAND in command:
             return ExecResult(exit_code=0, output=str(256 * 1024 * 1024 + 1))
         return result
 
@@ -921,7 +934,7 @@ async def test_capture_rejects_patch_that_changes_declared_size_during_stream() 
         timeout: float | None = None,
     ) -> ExecResult:
         result = await original_exec(command, cwd=cwd, timeout=timeout)
-        if command.startswith(PREDICTION_CAPTURE_COMMAND):
+        if PREDICTION_CAPTURE_COMMAND in command:
             return ExecResult(exit_code=0, output=str(len(sandbox.captured_prediction) - 1))
         return result
 
@@ -931,6 +944,39 @@ async def test_capture_rejects_patch_that_changes_declared_size_during_stream() 
         await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
 
     assert sandbox.downloads == []
+
+
+async def test_capture_retry_replaces_read_only_file_after_lost_response() -> None:
+    benchmark = service()
+    sandbox = FakeSandbox(captured_prediction=b"bounded")
+    attempts = 0
+    original_exec = sandbox.exec
+
+    async def lose_first_response(
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+    ) -> ExecResult:
+        nonlocal attempts
+        if PREDICTION_CAPTURE_COMMAND in command:
+            attempts += 1
+            match = re.search(r">\s*(\S+)", command)
+            assert match is not None
+            capture_path = match.group(1)
+            if attempts == 1:
+                sandbox.uploads[capture_path] = sandbox.captured_prediction
+                raise SandboxError("lost response")
+            if not command.startswith("rm -f -- "):
+                return ExecResult(exit_code=1, output="Permission denied")
+            sandbox.uploads[capture_path] = sandbox.captured_prediction
+            return ExecResult(exit_code=0, output=str(len(sandbox.captured_prediction)))
+        return await original_exec(command, cwd=cwd, timeout=timeout)
+
+    sandbox.exec = lose_first_response  # type: ignore[method-assign]
+
+    assert await benchmark._capture_prediction(sandbox) == b"bounded"  # pyright: ignore[reportPrivateUsage]
+    assert attempts == 2
 
 
 async def test_cancelled_resume_sandbox_creation_deletes_late_created_sandbox() -> None:
@@ -944,17 +990,11 @@ async def test_cancelled_resume_sandbox_creation_deletes_late_created_sandbox() 
         return provider.sandbox
 
     provider.create_sandbox = delayed_create  # type: ignore[method-assign]
-    request = SandboxCreateRequest(
-        source=SnapshotSource(snapshot="snapshot"),
-        resources=Resources(vcpu=1, memory=1, disk=1),
-        name="resume",
-        labels={},
-        env_vars={},
-        auto_stop_interval=15,
-        create_timeout=600,
-    )
     task = asyncio.create_task(
-        service_module._create_owned_sandbox(provider, request)  # pyright: ignore[reportPrivateUsage]
+        service_module._create_owned_sandbox(  # pyright: ignore[reportPrivateUsage]
+            provider,
+            resume_sandbox_request(),
+        )
     )
     await started.wait()
     task.cancel()
@@ -963,6 +1003,67 @@ async def test_cancelled_resume_sandbox_creation_deletes_late_created_sandbox() 
     with pytest.raises(asyncio.CancelledError):
         await task
 
+    assert provider.deleted == [provider.sandbox.id]
+
+
+async def test_cancelled_resume_sandbox_creation_preserves_cancellation_when_creation_fails() -> None:
+    provider = FakeProvider()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def failing_create(_request: SandboxCreateRequest) -> Sandbox:
+        started.set()
+        await release.wait()
+        raise SandboxError("provider failed")
+
+    provider.create_sandbox = failing_create  # type: ignore[method-assign]
+    task = asyncio.create_task(
+        service_module._create_owned_sandbox(  # pyright: ignore[reportPrivateUsage]
+            provider,
+            resume_sandbox_request(),
+        )
+    )
+    await started.wait()
+    task.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_repeated_cancellation_still_deletes_late_created_resume_sandbox() -> None:
+    provider = FakeProvider()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    deleted = asyncio.Event()
+
+    async def delayed_create(_request: SandboxCreateRequest) -> Sandbox:
+        started.set()
+        await release.wait()
+        return provider.sandbox
+
+    async def record_delete(instance_id: str) -> None:
+        provider.deleted.append(instance_id)
+        deleted.set()
+
+    provider.create_sandbox = delayed_create  # type: ignore[method-assign]
+    provider.delete_sandbox = record_delete  # type: ignore[method-assign]
+    task = asyncio.create_task(
+        service_module._create_owned_sandbox(  # pyright: ignore[reportPrivateUsage]
+            provider,
+            resume_sandbox_request(),
+        )
+    )
+    await started.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    task.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await asyncio.wait_for(deleted.wait(), timeout=1)
     assert provider.deleted == [provider.sandbox.id]
 
 

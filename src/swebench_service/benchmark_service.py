@@ -120,6 +120,17 @@ async def _delete_owned_sandbox(provider: SandboxProvider, sandbox_id: str) -> N
         logger.exception("Failed to delete SWE-bench eval-resume sandbox %s", sandbox_id)
 
 
+async def _cleanup_created_sandbox(
+    provider: SandboxProvider,
+    creation: asyncio.Task[Sandbox],
+) -> None:
+    try:
+        sandbox = await creation
+    except Exception:
+        return
+    await _delete_owned_sandbox(provider, sandbox.id)
+
+
 async def _create_owned_sandbox(
     provider: SandboxProvider,
     request: SandboxCreateRequest,
@@ -128,8 +139,11 @@ async def _create_owned_sandbox(
     try:
         return await asyncio.shield(creation)
     except asyncio.CancelledError:
-        sandbox = await asyncio.shield(creation)
-        await _delete_owned_sandbox(provider, sandbox.id)
+        cleanup = asyncio.create_task(_cleanup_created_sandbox(provider, creation))
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            pass
         raise
 
 
@@ -425,9 +439,11 @@ class SWEBenchService(BenchmarkService):
 
     async def _capture_prediction(self, sandbox: Sandbox) -> bytes:
         capture_path = f"{PREDICTION_CAPTURE_PATH_PREFIX}-{uuid4().hex}.patch"
+        quoted_capture_path = shlex.quote(capture_path)
         capture_command = (
-            f"{PREDICTION_CAPTURE_COMMAND} > {capture_path} "
-            f"&& chmod 0400 {capture_path} && stat -c %s -- {capture_path}"
+            f"rm -f -- {quoted_capture_path} && "
+            f"{PREDICTION_CAPTURE_COMMAND} > {quoted_capture_path} "
+            f"&& chmod 0400 {quoted_capture_path} && stat -c %s -- {quoted_capture_path}"
         )
         try:
             result = await with_retry(
