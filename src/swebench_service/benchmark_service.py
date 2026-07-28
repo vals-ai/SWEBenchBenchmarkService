@@ -89,6 +89,8 @@ trap _record_agent_baseline EXIT
 
 def _build_setup_script(task: dict[str, Any]) -> str:
     setup_script = Path("setup.sh").read_text()
+    if "set -euo pipefail" not in setup_script:
+        raise RuntimeError("SWE-bench setup script is missing the agent baseline trap anchor")
     setup_script = setup_script.replace("set -euo pipefail", f"set -euo pipefail\n{_AGENT_BASELINE_TRAP}", 1)
     pre_install = get_pre_install_commands(task["repo"], task["version"])
     if pre_install:

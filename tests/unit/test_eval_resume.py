@@ -35,6 +35,16 @@ from swebench_service.schemas import EvaluationResult
 TEST_TASK_CONTRACT_SHA256 = "0" * 64
 
 
+def test_setup_script_requires_baseline_trap_anchor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "setup.sh").write_text("#!/bin/sh\nset -eu\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(RuntimeError, match="baseline trap"):
+        service_module._build_setup_script(  # pyright: ignore[reportPrivateUsage]
+            {"repo": "astropy/astropy", "version": "main"}
+        )
+
+
 class FakeSandbox(Sandbox):
     def __init__(
         self,
