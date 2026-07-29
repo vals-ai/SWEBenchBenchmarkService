@@ -1,5 +1,7 @@
 import asyncio
-from collections.abc import AsyncGenerator
+import base64
+from collections.abc import AsyncGenerator, Mapping
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -41,14 +43,29 @@ class FakeSandbox(Sandbox):
 
     async def exec(self, command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
         self.commands.append((command, cwd))
-        if command == PREDICTION_CAPTURE_COMMAND:
-            self.uploads["/tmp/swebench-prediction.patch"] = b""
+        if PREDICTION_CAPTURE_COMMAND in command:
+            match = re.search(r">\s*(\S+)", command)
+            capture_path = match.group(1) if match is not None else "/tmp/swebench-prediction.patch"
+            self.uploads[capture_path] = b""
+            return ExecResult(exit_code=0, output="0")
         return ExecResult(exit_code=0, output="")
 
     async def command(
-        self, command: str, *, cwd: str | None = None, timeout: float | None = None
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        env_vars: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
+        del env_vars
         self.commands.append((command, cwd))
+        if "base64 " in command:
+            path = command.split("base64 ", 1)[1].split(" && ", 1)[0].strip()
+            yield "SWEBENCH_PREDICTION_BASE64_BEGIN\r\n"
+            yield base64.b64encode(self.uploads[path]).decode()
+            yield "\r\nSWEBENCH_PREDICTION_BASE64_END\r\n"
+            return
         yield "setup complete"
 
     async def upload_file(self, remote_path: str, content: bytes) -> None:
@@ -60,8 +77,14 @@ class FakeSandbox(Sandbox):
 
 class QuietThenOutputSandbox(FakeSandbox):
     async def command(
-        self, command: str, *, cwd: str | None = None, timeout: float | None = None
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        env_vars: Mapping[str, str] | None = None,
     ) -> AsyncGenerator[str, None]:
+        del env_vars
         self.commands.append((command, cwd))
         await asyncio.sleep(0.02)
         yield "command output"
@@ -130,7 +153,7 @@ async def test_evaluate_instance_excludes_watchdog_messages_from_grading(monkeyp
     - Only real command output is passed to the grader.
     """
     service = SWEBenchService()
-    service.datasets = {"default": {"task-1": {"repo": "django/django", "version": "4.2"}}}
+    service.datasets = {"default": {"task-1": {"base_commit": "abc123", "repo": "django/django", "version": "4.2"}}}
     sandbox = FakeSandbox()
     test_spec = object()
     graded_outputs: list[str] = []
@@ -178,7 +201,7 @@ async def test_evaluate_instance_grades_captured_log_file(monkeypatch: pytest.Mo
     from swebench_service.test_spec import EVAL_OUTPUT_PATH
 
     service = SWEBenchService()
-    service.datasets = {"default": {"task-1": {"repo": "sympy/sympy", "version": "1.9"}}}
+    service.datasets = {"default": {"task-1": {"base_commit": "abc123", "repo": "sympy/sympy", "version": "1.9"}}}
     graded_outputs: list[str] = []
 
     class LogFileSandbox(FakeSandbox):
