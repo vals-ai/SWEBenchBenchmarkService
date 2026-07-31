@@ -3,7 +3,11 @@
 import asyncio
 import contextlib
 import hashlib
+import json
 import logging
+import shlex
+from base64 import b64decode
+from binascii import Error as Base64Error
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
@@ -16,6 +20,7 @@ from benchmark_service.sandbox import (
     SandboxCommandError,
     SandboxCreateRequest,
     SandboxError,
+    SandboxProvider,
 )
 from benchmark_service.schemas import (
     EvaluateResponseRequest,
@@ -39,22 +44,59 @@ from swebench_service import (
     load_dataset_from_disk,
     load_vals_index_subset,
 )
-from swebench_service.eval_resume import EvalResumeState, load_prediction, persist_prediction
+from swebench_service.eval_resume import MAX_PREDICTION_BYTES, EvalResumeState, load_prediction, persist_prediction
 from swebench_service.utils import with_retry
 
 logger = logging.getLogger(__name__)
 
 PROBLEM_STATEMENT_PATH = "/tmp/problem_statement.txt"
 PREDICTION_PATH = "/tmp/swebench-prediction.patch"
+AGENT_BASELINE_TREE_PATH = "/tmp/swebench-agent-baseline.tree"
+AGENT_BASELINE_INDEX_PATH = "/tmp/swebench-agent-baseline.index"
 PREDICTION_CAPTURE_COMMAND = (
-    f"git add -N . && git diff --binary --full-index --no-ext-diff --no-textconv --no-color HEAD > {PREDICTION_PATH}"
+    f"umask 077; baseline=$(cat {AGENT_BASELINE_TREE_PATH}) "
+    "&& git add -N . "
+    '&& git diff --binary --full-index --no-ext-diff --no-textconv --no-color "$baseline" --'
 )
+PREDICTION_CAPTURE_PATH_PREFIX = "/tmp/swebench-prediction-capture"
+PREDICTION_CAPTURE_TIMEOUT_SECONDS = 300.0
+_PREDICTION_STREAM_BEGIN = "SWEBENCH_PREDICTION_BASE64_BEGIN"
+_PREDICTION_STREAM_END = "SWEBENCH_PREDICTION_BASE64_END"
 COMMAND_QUIET_SECONDS = 300.0
 EVAL_SANDBOX_CREATE_TIMEOUT_SECONDS = 600
 EVAL_SANDBOX_AUTO_STOP_MINUTES = 15
 IMAGE_DIGEST_OVERRIDES = {
     "scikit-learn__scikit-learn-12585": "sha256:438346134907344bb2444ac8f0764ffa90384cf9a4bcfc2b4b398ed95847308e",
 }
+_AGENT_BASELINE_TRAP = f"""
+_record_agent_baseline() {{
+    setup_status=$?
+    trap - EXIT
+    set +e
+    rm -f -- {AGENT_BASELINE_INDEX_PATH}
+    GIT_INDEX_FILE={AGENT_BASELINE_INDEX_PATH} git read-tree HEAD &&
+        GIT_INDEX_FILE={AGENT_BASELINE_INDEX_PATH} git add -A &&
+        GIT_INDEX_FILE={AGENT_BASELINE_INDEX_PATH} git write-tree > {AGENT_BASELINE_TREE_PATH}
+    baseline_status=$?
+    rm -f -- {AGENT_BASELINE_INDEX_PATH}
+    if [ "$baseline_status" -ne 0 ]; then
+        exit "$baseline_status"
+    fi
+    exit "$setup_status"
+}}
+trap _record_agent_baseline EXIT
+"""
+
+
+def _build_setup_script(task: dict[str, Any]) -> str:
+    setup_script = Path("setup.sh").read_text()
+    if "set -euo pipefail" not in setup_script:
+        raise RuntimeError("SWE-bench setup script is missing the agent baseline trap anchor")
+    setup_script = setup_script.replace("set -euo pipefail", f"set -euo pipefail\n{_AGENT_BASELINE_TRAP}", 1)
+    pre_install = get_pre_install_commands(task["repo"], task["version"])
+    if pre_install:
+        setup_script += "\n" + "\n".join(pre_install)
+    return setup_script
 
 
 def _resume_sandbox_name(state: EvalResumeState) -> str:
@@ -65,6 +107,84 @@ def _resume_sandbox_name(state: EvalResumeState) -> str:
 
 def watchdog_message(quiet_seconds: float) -> str:
     return f"[Debug]: No logs have been produced in the last {quiet_seconds:g} seconds, evaluation may be stuck"
+
+
+async def _delete_owned_sandbox(provider: SandboxProvider, sandbox_id: str) -> None:
+    cleanup = asyncio.create_task(provider.delete_sandbox(sandbox_id))
+    try:
+        await asyncio.shield(cleanup)
+    except asyncio.CancelledError:
+        await asyncio.shield(cleanup)
+        raise
+    except Exception:
+        logger.exception("Failed to delete SWE-bench eval-resume sandbox %s", sandbox_id)
+
+
+async def _cleanup_created_sandbox(
+    provider: SandboxProvider,
+    creation: asyncio.Task[Sandbox],
+) -> None:
+    try:
+        sandbox = await creation
+    except Exception:
+        return
+    await _delete_owned_sandbox(provider, sandbox.id)
+
+
+async def _create_owned_sandbox(
+    provider: SandboxProvider,
+    request: SandboxCreateRequest,
+) -> Sandbox:
+    creation = asyncio.create_task(provider.create_sandbox(request))
+    try:
+        return await asyncio.shield(creation)
+    except asyncio.CancelledError:
+        cleanup = asyncio.create_task(_cleanup_created_sandbox(provider, creation))
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            pass
+        raise
+
+
+async def _read_sandbox_file_bounded(sandbox: Sandbox, path: str, *, limit: int) -> bytes:
+    decoded = bytearray()
+    line_buffer = ""
+    started = False
+    ended = False
+    command = (
+        f"printf '%s\\n' {_PREDICTION_STREAM_BEGIN} && "
+        f"base64 {shlex.quote(path)} && "
+        f"printf '%s\\n' {_PREDICTION_STREAM_END}"
+    )
+    try:
+        async for chunk in sandbox.command(
+            command,
+            cwd="/testbed",
+            timeout=PREDICTION_CAPTURE_TIMEOUT_SECONDS,
+        ):
+            line_buffer += chunk.replace("\r", "")
+            while "\n" in line_buffer:
+                line, line_buffer = line_buffer.split("\n", 1)
+                value = line.strip()
+                if not started:
+                    started = value.endswith(_PREDICTION_STREAM_BEGIN)
+                    continue
+                if ended:
+                    continue
+                if value == _PREDICTION_STREAM_END:
+                    ended = True
+                    continue
+                if not value:
+                    continue
+                decoded.extend(b64decode(value, validate=True))
+                if len(decoded) > limit:
+                    raise ValueError(f"SWE-bench prediction exceeds the {limit}-byte size limit")
+        if not ended:
+            raise ValueError("SWE-bench sandbox returned invalid base64 prediction data")
+    except (Base64Error, UnicodeEncodeError) as exc:
+        raise ValueError("SWE-bench sandbox returned invalid base64 prediction data") from exc
+    return bytes(decoded)
 
 
 class SWEBenchService(BenchmarkService):
@@ -160,6 +280,35 @@ class SWEBenchService(BenchmarkService):
             resources=resources,
         )
 
+    def _task_contract_sha256(
+        self,
+        task_id: str,
+        dataset: str | None,
+        task_data: RetrieveTaskResponse,
+    ) -> str:
+        task = self.get_dataset(dataset)[task_id]
+        service_dir = Path(__file__).parent
+        payload = {
+            "version": 1,
+            "task_id": task_id,
+            "dataset": dataset or "default",
+            "image": task_data.source.model_dump(mode="json"),
+            "setup": {
+                "base_commit": task["base_commit"],
+                "script_sha256": hashlib.sha256(_build_setup_script(task).encode()).hexdigest(),
+            },
+            "evaluator": {
+                "run_command": create_run_command(task_id),
+                "test_patch": task.get("test_patch"),
+                "fail_to_pass": task.get("FAIL_TO_PASS"),
+                "pass_to_pass": task.get("PASS_TO_PASS"),
+                "benchmark_service_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                "evaluation_sha256": hashlib.sha256((service_dir / "evaluation.py").read_bytes()).hexdigest(),
+                "test_spec_sha256": hashlib.sha256((service_dir / "test_spec.py").read_bytes()).hexdigest(),
+            },
+        }
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
     async def setup_task(
         self, task_id: str, sandbox: Sandbox, dataset: str | None = None
     ) -> AsyncGenerator[StreamChunk, None]:
@@ -173,11 +322,8 @@ class SWEBenchService(BenchmarkService):
         await with_retry(sandbox, lambda: sandbox.upload_file(PROBLEM_STATEMENT_PATH, problem_statement.encode()))
         yield StreamMessageChunk(type="message", data="Uploaded problem statement")
 
-        # Build setup script: base + repo-specific pre-install
-        setup_script = Path("setup.sh").read_text()
-        pre_install = get_pre_install_commands(task["repo"], task["version"])
-        if pre_install:
-            setup_script += "\n" + "\n".join(pre_install)
+        # Build setup script: base + repo-specific pre-install + post-setup Git baseline.
+        setup_script = _build_setup_script(task)
 
         # Upload setup script
         await with_retry(sandbox, lambda: sandbox.upload_file("/setup.sh", setup_script.encode()))
@@ -203,7 +349,7 @@ class SWEBenchService(BenchmarkService):
             raise ValueError("SWE-bench eval resume requires eval_resume_state")
 
         state = EvalResumeState.model_validate(request.eval_resume_state)
-        requested_dataset = dataset or "default"
+        requested_dataset = dataset or request.dataset or "default"
         if state.task_id != request.task_id:
             raise ValueError(f"eval_resume_state task_id mismatch: {state.task_id} != {request.task_id}")
         if state.dataset != requested_dataset:
@@ -211,14 +357,18 @@ class SWEBenchService(BenchmarkService):
         if request.sandbox_provider is None:
             raise ValueError("SWE-bench eval resume requires sandbox_provider")
 
-        await self.validate_task_ids([request.task_id], dataset=dataset)
-        yield StreamEvalResumeStateChunk(type="eval_resume_state", data=state.model_dump(mode="json"))
+        await self.validate_task_ids([request.task_id], dataset=requested_dataset)
+        task_data = await self.retrieve_task(request.task_id, skip_validation=True, dataset=requested_dataset)
+        task_contract_sha256 = self._task_contract_sha256(request.task_id, requested_dataset, task_data)
+        if state.task_contract_sha256 != task_contract_sha256:
+            raise ValueError("SWE-bench eval resume task contract does not match the current evaluator")
         prediction_bytes = await load_prediction(state)
+        yield StreamEvalResumeStateChunk(type="eval_resume_state", data=state.model_dump(mode="json"))
         prediction = prediction_bytes.decode("utf-8", errors="replace") or None
 
-        task_data = await self.retrieve_task(request.task_id, skip_validation=True, dataset=dataset)
         async with request.sandbox_provider.create_provider() as provider:
-            sandbox = await provider.create_sandbox(
+            sandbox = await _create_owned_sandbox(
+                provider,
                 SandboxCreateRequest(
                     source=task_data.source,
                     resources=task_data.resources,
@@ -232,10 +382,10 @@ class SWEBenchService(BenchmarkService):
                     env_vars={},
                     auto_stop_interval=EVAL_SANDBOX_AUTO_STOP_MINUTES,
                     create_timeout=EVAL_SANDBOX_CREATE_TIMEOUT_SECONDS,
-                )
+                ),
             )
             try:
-                async for chunk in self.setup_task(request.task_id, sandbox, dataset=dataset):
+                async for chunk in self.setup_task(request.task_id, sandbox, dataset=requested_dataset):
                     if isinstance(chunk, StreamMessageChunk):
                         yield chunk
 
@@ -257,14 +407,11 @@ class SWEBenchService(BenchmarkService):
                     request.task_id,
                     sandbox,
                     prediction,
-                    dataset=dataset,
+                    dataset=requested_dataset,
                 ):
                     yield chunk
             finally:
-                try:
-                    await provider.delete_sandbox(sandbox.id)
-                except Exception:
-                    logger.exception("Failed to delete SWE-bench eval-resume sandbox %s", sandbox.id)
+                await _delete_owned_sandbox(provider, sandbox.id)
 
     async def evaluate_instance(
         self, task_id: str, sandbox: Sandbox, dataset: str | None = None
@@ -276,7 +423,14 @@ class SWEBenchService(BenchmarkService):
         yield StreamMessageChunk(type="message", data="Capturing agent's changes...")
         prediction_bytes = await self._capture_prediction(sandbox)
 
-        resume_state = await persist_prediction(sandbox, task_id, dataset, prediction_bytes)
+        task_data = await self.retrieve_task(task_id, skip_validation=True, dataset=dataset)
+        resume_state = await persist_prediction(
+            sandbox,
+            task_id,
+            dataset,
+            prediction_bytes,
+            task_contract_sha256=self._task_contract_sha256(task_id, dataset, task_data),
+        )
         yield StreamEvalResumeStateChunk(type="eval_resume_state", data=resume_state.model_dump(mode="json"))
         prediction = prediction_bytes.decode("utf-8", errors="replace") or None
 
@@ -284,16 +438,46 @@ class SWEBenchService(BenchmarkService):
             yield chunk
 
     async def _capture_prediction(self, sandbox: Sandbox) -> bytes:
-        result = await with_retry(
-            sandbox,
-            lambda: sandbox.exec(
-                PREDICTION_CAPTURE_COMMAND,
-                cwd="/testbed",
-            ),
+        capture_path = f"{PREDICTION_CAPTURE_PATH_PREFIX}-{uuid4().hex}.patch"
+        quoted_capture_path = shlex.quote(capture_path)
+        capture_command = (
+            f"rm -f -- {quoted_capture_path} && "
+            f"{PREDICTION_CAPTURE_COMMAND} > {quoted_capture_path} "
+            f"&& chmod 0400 {quoted_capture_path} && stat -c %s -- {quoted_capture_path}"
         )
-        if result.exit_code != 0:
-            raise RuntimeError(f"Failed to capture SWE-bench prediction:\n{result.output}")
-        return await sandbox.download_file(PREDICTION_PATH)
+        try:
+            result = await with_retry(
+                sandbox,
+                lambda: sandbox.exec(
+                    capture_command,
+                    cwd="/testbed",
+                ),
+            )
+            if result.exit_code != 0:
+                raise RuntimeError(f"Failed to capture SWE-bench prediction:\n{result.output}")
+            try:
+                expected_size = int(result.output.strip().splitlines()[-1])
+            except (IndexError, ValueError) as exc:
+                raise RuntimeError("Failed to read captured SWE-bench prediction size") from exc
+            if not 0 <= expected_size <= MAX_PREDICTION_BYTES:
+                raise ValueError(f"SWE-bench prediction exceeds the {MAX_PREDICTION_BYTES}-byte size limit")
+
+            prediction = await _read_sandbox_file_bounded(
+                sandbox,
+                capture_path,
+                limit=MAX_PREDICTION_BYTES,
+            )
+            if len(prediction) != expected_size:
+                raise RuntimeError(
+                    "Captured SWE-bench prediction changed size during streaming: "
+                    f"expected {expected_size} bytes, got {len(prediction)}"
+                )
+            return prediction
+        finally:
+            try:
+                await sandbox.exec(f"rm -f -- {capture_path}", cwd="/testbed")
+            except Exception:
+                logger.exception("Failed to remove SWE-bench prediction capture %s", capture_path)
 
     async def _evaluate_prediction(
         self,
@@ -318,7 +502,11 @@ class SWEBenchService(BenchmarkService):
         test_output: list[str] = []
         for attempt in range(MAX_RETRIES):
             test_output = []
-            msg = "Running tests..." if attempt == 0 else f"Stream interrupted, retrying (attempt {attempt + 1}/{MAX_RETRIES})..."
+            msg = (
+                "Running tests..."
+                if attempt == 0
+                else f"Stream interrupted, retrying (attempt {attempt + 1}/{MAX_RETRIES})..."
+            )
             yield StreamMessageChunk(type="message", data=msg)
             try:
                 async for line in self.stream_command_with_watchdog(sandbox, run_command, cwd="/testbed"):
