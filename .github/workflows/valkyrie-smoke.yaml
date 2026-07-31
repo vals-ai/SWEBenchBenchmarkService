@@ -13,6 +13,14 @@ on:
         description: "Optional model override, e.g. openai/gpt-5.5"
         required: false
         type: string
+      retry_run_id:
+        description: "Optional completed dev run ID whose passing task should be re-evaluated."
+        required: false
+        type: string
+      benchmark_url:
+        description: "Replacement SWE-bench service URL used when retry_run_id is provided."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -20,6 +28,7 @@ permissions:
 
 jobs:
   smoke:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.retry_run_id == '' }}
     uses: vals-ai/.github/.github/workflows/benchmark-service-smoke.yaml@main
     secrets:
       VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
@@ -30,3 +39,13 @@ jobs:
       SMOKE_AGENT: ${{ secrets.SMOKE_AGENT }}
       SMOKE_MODEL: ${{ github.event.inputs.model || secrets.SMOKE_MODEL }}
       BENCHMARK_SERVICE_ENV: ${{ secrets.BENCHMARK_SERVICE_ENV }}
+
+  retry-eval:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.retry_run_id != '' }}
+    uses: vals-ai/.github/.github/workflows/retry-eval.yaml@jf/retry-eval-passed-task
+    with:
+      run_id: ${{ inputs.retry_run_id }}
+      benchmark_name: swebench
+      benchmark_url: ${{ inputs.benchmark_url }}
+    secrets:
+      VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
