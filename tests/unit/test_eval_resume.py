@@ -444,6 +444,52 @@ async def test_failed_evaluation_resumes_from_exact_persisted_patch(
     }
 
 
+async def test_resume_accepts_checkpoint_without_task_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Previously persisted checkpoints must remain usable after contract hashing is added.
+
+    Test cases:
+    - A checkpoint without task_contract_sha256 resumes evaluation successfully.
+    """
+    benchmark = service()
+    state = await persist_for_service(benchmark, FakeSandbox(), None, b"patch")
+    legacy_state = state.model_dump(mode="json")
+    legacy_state.pop("task_contract_sha256")
+    provider = FakeProvider()
+    provider.sandbox.captured_prediction = b"patch"
+    use_provider(monkeypatch, provider)
+
+    async def evaluate(
+        task_id: str,
+        sandbox: Sandbox,
+        prediction: str | None,
+        dataset: str | None = None,
+    ) -> AsyncGenerator[StreamChunk, None]:
+        del task_id, sandbox, dataset
+        yield StreamResultChunk(
+            type="result",
+            data=EvaluationResult(
+                prediction=prediction,
+                patch_successfully_applied=True,
+                resolved=True,
+                resolution_status="FULL",
+            ).model_dump(),
+        )
+
+    monkeypatch.setattr(benchmark, "_evaluate_prediction", evaluate)
+    request = EvaluateResponseRequest(
+        task_id="task-1",
+        eval_resume_state=legacy_state,
+        sandbox_provider=sandbox_provider_config(),
+    )
+
+    resumed = [chunk async for chunk in benchmark.stream_evaluate_response(request)]
+
+    assert resumed[-1].type == "result"
+    assert provider.deleted == [provider.sandbox.id]
+
+
 async def test_resume_deletes_sandbox_when_evaluation_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     benchmark = service()
     original_sandbox = FakeSandbox(captured_prediction=b"patch")
