@@ -12,11 +12,6 @@ on:
         description: "Completed Valkyrie run ID to retry evaluation for."
         required: true
         type: string
-      benchmark_url:
-        description: "Replacement SWE-bench service URL."
-        required: false
-        default: "https://swebench.benchmarks.vals.ai:443"
-        type: string
 
 permissions:
   contents: read
@@ -28,8 +23,10 @@ jobs:
     with:
       run_id: ${{ inputs.run_id || 'ccd9d149-0fb1-4a18-b27a-1b739a5f16c2' }}
       benchmark_name: swebench
-      benchmark_url: ${{ inputs.benchmark_url || 'https://swebench.benchmarks.vals.ai:443' }}
-      passing_task_only: true
       valkyrie_ref: dev
     secrets:
       VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
+      NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+      NGROK_URL: ${{ secrets.NGROK_URL }}
+      SMOKE_DATASET: ${{ secrets.SMOKE_DATASET }}
+      BENCHMARK_SERVICE_ENV: ${{ secrets.BENCHMARK_SERVICE_ENV }}

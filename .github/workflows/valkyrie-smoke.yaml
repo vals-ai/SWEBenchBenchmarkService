@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   smoke:
-    uses: vals-ai/.github/.github/workflows/benchmark-service-smoke.yaml@main
+    uses: vals-ai/.github/.github/workflows/benchmark-service-smoke.yaml@jf/retry-eval-passed-task
     secrets:
       VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
       NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
