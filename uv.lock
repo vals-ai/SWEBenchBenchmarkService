@@ -469,8 +469,8 @@ wheels = [
 
 [[package]]
 name = "create-benchmark-service"
-version = "0.22.3.dev1+g44775d667"
-source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=44775d667dc4f0df12efa0882043b69967f854ec#44775d667dc4f0df12efa0882043b69967f854ec" }
+version = "0.22.3.dev2+g54831b3fc"
+source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=54831b3#54831b3fc71ecd7eca536263b2f1906893f967df" }
 dependencies = [
     { name = "boto3" },
     { name = "cachetools" },
@@ -2576,7 +2576,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.42.62" },
-    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=44775d667dc4f0df12efa0882043b69967f854ec" },
+    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=54831b3" },
     { name = "datasets", specifier = ">=4.4.2" },
     { name = "pandas", specifier = "<3.0.0" },
     { name = "swebench", specifier = "==4.1.0" },
