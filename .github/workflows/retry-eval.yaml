@@ -1,6 +1,9 @@
 name: retry-eval
 
 on:
+  pull_request:
+    branches: [prod]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       task_id:
@@ -20,13 +23,14 @@ permissions:
 
 jobs:
   smoke:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     uses: vals-ai/.github/.github/workflows/benchmark-service-smoke.yaml@main
     secrets:
       VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
       NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
       NGROK_URL: ${{ secrets.NGROK_URL }}
-      SMOKE_DATASET: ${{ inputs.dataset }}
-      SMOKE_TASK_ID: ${{ inputs.task_id }}
+      SMOKE_DATASET: ${{ inputs.dataset || 'default' }}
+      SMOKE_TASK_ID: ${{ inputs.task_id || 'astropy__astropy-12907' }}
       SMOKE_AGENT: ${{ secrets.SMOKE_AGENT }}
       SMOKE_MODEL: ${{ secrets.SMOKE_MODEL }}
       BENCHMARK_SERVICE_ENV: ${{ secrets.BENCHMARK_SERVICE_ENV }}
@@ -42,5 +46,5 @@ jobs:
       VALKYRIE_AWS_ROLE_ARN: ${{ secrets.VALKYRIE_AWS_ROLE_ARN }}
       NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
       NGROK_URL: ${{ secrets.NGROK_URL }}
-      SMOKE_DATASET: ${{ inputs.dataset }}
+      SMOKE_DATASET: ${{ inputs.dataset || 'default' }}
       BENCHMARK_SERVICE_ENV: ${{ secrets.BENCHMARK_SERVICE_ENV }}
