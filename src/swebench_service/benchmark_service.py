@@ -360,7 +360,7 @@ class SWEBenchService(BenchmarkService):
         await self.validate_task_ids([request.task_id], dataset=requested_dataset)
         task_data = await self.retrieve_task(request.task_id, skip_validation=True, dataset=requested_dataset)
         task_contract_sha256 = self._task_contract_sha256(request.task_id, requested_dataset, task_data)
-        if state.task_contract_sha256 is not None and state.task_contract_sha256 != task_contract_sha256:
+        if state.task_contract_sha256 != task_contract_sha256:
             raise ValueError("SWE-bench eval resume task contract does not match the current evaluator")
         prediction_bytes = await load_prediction(state)
         yield StreamEvalResumeStateChunk(type="eval_resume_state", data=state.model_dump(mode="json"))
