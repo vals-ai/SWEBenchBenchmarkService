@@ -58,7 +58,7 @@ class EvalResumeState(BaseModel):
     prediction_s3_key: str
     prediction_sha256: str
     prediction_size_bytes: int = Field(ge=0, le=MAX_PREDICTION_BYTES)
-    task_contract_sha256: str | None = None
+    task_contract_sha256: str
 
     @field_validator("version", "prediction_size_bytes", mode="before")
     @classmethod
@@ -74,17 +74,10 @@ class EvalResumeState(BaseModel):
             raise ValueError("resume-state identifiers may contain only letters, numbers, '.', '_', and '-'")
         return value
 
-    @field_validator("prediction_sha256")
+    @field_validator("prediction_sha256", "task_contract_sha256")
     @classmethod
-    def validate_prediction_sha256(cls, value: str) -> str:
+    def validate_sha256(cls, value: str) -> str:
         if not _SHA256.fullmatch(value):
-            raise ValueError("checkpoint digests must be lowercase SHA-256 values")
-        return value
-
-    @field_validator("task_contract_sha256")
-    @classmethod
-    def validate_task_contract_sha256(cls, value: str | None) -> str | None:
-        if value is not None and not _SHA256.fullmatch(value):
             raise ValueError("checkpoint digests must be lowercase SHA-256 values")
         return value
 
