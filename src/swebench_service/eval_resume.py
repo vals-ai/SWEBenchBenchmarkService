@@ -137,12 +137,7 @@ async def load_prediction(state: EvalResumeState) -> bytes:
 
 
 def _sandbox_labels(sandbox: Sandbox) -> dict[str, str]:
-    inner = getattr(sandbox, "_sandbox", None)
-    labels = getattr(inner, "labels", None)
-    if not isinstance(labels, dict):
-        return {}
-    raw_labels = cast(dict[object, object], labels)
-    return {key: value for key, value in raw_labels.items() if isinstance(key, str) and isinstance(value, str)}
+    return dict(sandbox.labels or {})
 
 
 def _local_root() -> Path | None:
