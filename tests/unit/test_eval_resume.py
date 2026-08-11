@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import re
 import subprocess
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -54,12 +53,10 @@ class FakeSandbox(Sandbox):
     ) -> None:
         self._id = sandbox_id
         self.captured_prediction = captured_prediction
-        self._sandbox = SimpleNamespace(
-            labels={
-                "Id": "00000000-0000-0000-0000-000000000001",
-                "Benchmark": "swebench",
-            }
-        )
+        self.labels = {
+            "Id": "00000000-0000-0000-0000-000000000001",
+            "Benchmark": "swebench",
+        }
         self.uploads: dict[str, bytes] = {}
         self.commands: list[tuple[str, str | None]] = []
         self.downloads: list[str] = []
@@ -140,12 +137,10 @@ class GitSandbox(Sandbox):
         self.repo = root / "testbed"
         self.remote_tmp = root / "tmp"
         self.remote_tmp.mkdir(parents=True)
-        self._sandbox = SimpleNamespace(
-            labels={
-                "Id": "00000000-0000-0000-0000-000000000001",
-                "Benchmark": "swebench",
-            }
-        )
+        self.labels = {
+            "Id": "00000000-0000-0000-0000-000000000001",
+            "Benchmark": "swebench",
+        }
         self.commands: list[tuple[str, str | None]] = []
 
     @property
