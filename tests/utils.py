@@ -27,7 +27,13 @@ class TestClientProtocol(Protocol):
         traceback: TracebackType | None,
     ) -> None: ...
 
-    def get(self, url: str, *, params: Mapping[str, Any] | None = None) -> Response: ...
+    def get(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> Response: ...
 
     def post(self, url: str, *, json: Any = None, headers: Mapping[str, str] | None = None) -> Response: ...
 
@@ -79,6 +85,7 @@ class BenchmarkServiceTestClient:
         task_ids: list[str] | None = None,
         slice_str: str | None = None,
         dataset: str | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> Response:
         """
         Requests verify task ids from benchmark service
@@ -91,7 +98,7 @@ class BenchmarkServiceTestClient:
         if dataset is not None:
             params["dataset"] = dataset
 
-        response = self._client.get("/verify-task-ids", params=params)
+        response = self._client.get("/verify-task-ids", params=params, headers=headers)
         logger.info(f"Verify task ids response: {response.text}")
         return response
 
