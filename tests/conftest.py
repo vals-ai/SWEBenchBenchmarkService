@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 import pytest
@@ -28,6 +27,5 @@ def setup_dataset(tmp_path_factory: TempPathFactory, monkeypatch: MonkeyPatch) -
 
 
 def pytest_configure(config: Config) -> None:
-    """Configure pytest with asyncio mode and the auth-disabled test profile."""
+    """Configure pytest with asyncio mode."""
     config.option.asyncio_mode = "auto"
-    os.environ["AUTH_DISABLED"] = "true"
