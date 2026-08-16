@@ -14,6 +14,7 @@ def setup_dataset(tmp_path_factory: TempPathFactory, monkeypatch: MonkeyPatch) -
     tmp_path = tmp_path_factory.mktemp("data")
     task_directory = tmp_path / "swe-bench-verified"
     monkeypatch.setenv("SWEBENCH_EVAL_STATE_LOCAL_DIR", str(tmp_path / "eval-resume"))
+    monkeypatch.setenv("AUTH_DISABLED", "true")
 
     # Update monkeypatch paths for new structure
     monkeypatch.setattr("swebench_service.dataset.DISK_PATH", task_directory)
