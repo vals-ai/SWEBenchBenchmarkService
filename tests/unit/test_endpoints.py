@@ -2,7 +2,7 @@ from collections.abc import Generator
 
 import pytest
 
-from swebench_service import load_dataset_from_disk
+from swebench_service import load_dataset_from_disk, load_multimodal_dataset_from_disk
 from tests.utils import BenchmarkServiceTestClient
 
 
@@ -226,3 +226,59 @@ class TestEndpoints:
         data = response.json()
         assert data["final_score"] == 0.0
         assert len(data["tasks_evaluated"]) == 0
+
+
+class TestMultimodalEndpoints:
+    @pytest.fixture
+    def client(self) -> Generator[BenchmarkServiceTestClient]:
+        c = BenchmarkServiceTestClient()
+        yield c
+        c.close()
+
+    async def test_verify_task_ids_all_multimodal(self, client: BenchmarkServiceTestClient) -> None:
+        """The multimodal dataset serves exactly the pinned dev split."""
+        response = await client.request_verify_task_ids(dataset="multimodal")
+        assert response.status_code == 200
+        assert response.json()["task_ids"] == list(load_multimodal_dataset_from_disk().keys())
+
+    async def test_verify_task_ids_multimodal_rejects_verified_id(self, client: BenchmarkServiceTestClient) -> None:
+        """A Verified instance is not a member of the multimodal dataset."""
+        response = await client.request_verify_task_ids(["django__django-11099"], dataset="multimodal")
+        assert response.status_code == 400
+
+    async def test_verify_task_ids_default_rejects_multimodal_id(self, client: BenchmarkServiceTestClient) -> None:
+        """A multimodal instance is not a member of the default (Verified) dataset."""
+        task_id = next(iter(load_multimodal_dataset_from_disk()))
+        response = await client.request_verify_task_ids([task_id])
+        assert response.status_code == 400
+
+    async def test_retrieve_task_multimodal(self, client: BenchmarkServiceTestClient) -> None:
+        """Multimodal tasks use the published evaluation image and the larger sandbox."""
+        dataset = load_multimodal_dataset_from_disk()
+        task_id, task = next(iter(dataset.items()))
+
+        response = await client.request_retrieve_task(task_id, dataset="multimodal")
+        assert response.status_code == 200
+        data = response.json()
+
+        assert data["docker_image"] == task["image"]
+        assert data["docker_image"] == f"swebench/sweb.eval.x86_64.{task_id.replace('__', '_1776_').lower()}:latest"
+        assert data["cwd"] == "/testbed"
+        assert data["problem_path"]
+        assert (data["resources"]["vcpu"], data["resources"]["memory"], data["resources"]["disk"]) == (4, 8, 10)
+
+    async def test_retrieve_task_verified_resources_unchanged(self, client: BenchmarkServiceTestClient) -> None:
+        """The multimodal allocation does not leak into Verified tasks."""
+        response = await client.request_retrieve_task("django__django-11099")
+        assert response.status_code == 200
+        resources = response.json()["resources"]
+        assert (resources["vcpu"], resources["memory"], resources["disk"]) == (2, 4, 10)
+
+    async def test_final_score_multimodal(self, client: BenchmarkServiceTestClient) -> None:
+        """Final score works unchanged for the multimodal dataset."""
+        task_ids = list(load_multimodal_dataset_from_disk())[:2]
+        evaluation_results = {task_ids[0]: {"resolved": True}, task_ids[1]: {"resolved": False}}
+
+        response = await client.request_final_score(evaluation_results, dataset="multimodal")
+        assert response.status_code == 200
+        assert response.json()["final_score"] == 50.0

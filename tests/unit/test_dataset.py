@@ -7,6 +7,7 @@ from tests.utils import BenchmarkServiceTestClient
 EXPECTED_SIZES = {
     "default": 500,
     "vals_index": 102,
+    "multimodal": 100,
 }
 
 

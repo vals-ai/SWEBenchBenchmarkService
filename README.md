@@ -4,7 +4,7 @@ A FastAPI-based service for evaluating software engineering agents on the SWE-be
 
 ## Overview
 
-SWE-bench is a benchmark for evaluating AI agents on real-world software engineering tasks. This service implements the **SWE-bench_Verified** dataset, which contains 500 carefully verified GitHub issues from popular Python repositories.
+SWE-bench is a benchmark for evaluating AI agents on real-world software engineering tasks. This service serves two datasets: **SWE-bench_Verified**, 500 carefully verified GitHub issues from popular Python repositories, and the **SWE-bench Multimodal** dev split, 100 issues from JavaScript repositories whose descriptions include screenshots.
 
 Each task requires:
 1. Understanding a GitHub issue description
@@ -29,12 +29,12 @@ Each task requires:
    make install
    ```
 
-2. **Download the SWE-bench_Verified dataset** (required before running the service):
+2. **Download the datasets** (required before running the service):
    ```bash
    make setup
    ```
 
-   This downloads ~500 task instances to `/tmp/swe-bench-verified/` (approximately 100MB).
+   This downloads the 500 Verified instances to `/tmp/swe-bench-verified/` (approximately 100MB) and the 100 Multimodal dev instances to `/tmp/swe-bench-multimodal/`.
 
 3. **Run the development server:**
    ```bash
@@ -52,9 +52,11 @@ make docker-build
 make docker-run
 ```
 
-The dataset is downloaded during the Docker build process, so no separate setup is needed.
+The datasets are downloaded during the Docker build process, so no separate setup is needed.
 
-## Dataset
+## Datasets
+
+### SWE-bench_Verified (`default`)
 
 - **Name:** SWE-bench_Verified
 - **Source:** `princeton-nlp/SWE-bench_Verified` (HuggingFace)
@@ -70,8 +72,19 @@ Each instance contains:
 - `patch`: Gold solution patch (for reference)
 - `repo`, `version`: Repository and version information
 
-### Vals Index Subset
+### Vals Index Subset (`vals_index`)
 The Vals Index subset can be fetched by passing in `dataset=vals_index` in the [/verify-task-ids](#verify-task-ids) endpoint
+
+### SWE-bench Multimodal, dev split (`multimodal`)
+
+- **Source:** `SWE-bench/SWE-bench_Multimodal` (HuggingFace), `dev` split, pinned to revision `4e6662d51c48e475f7f346e4fa09a6f8b31fcaa5`
+- **Size:** 100 instances
+- **Cache Location:** `/tmp/swe-bench-multimodal/`
+- **Repositories:** Automattic/wp-calypso (37), chartjs/Chart.js (22), processing/p5.js (16), markedjs/marked (14), diegomura/react-pdf (11)
+
+Request it with `dataset=multimodal`. Instances carry the same fields as Verified plus `image_assets`, a JSON map of the image URLs found in the `problem_statement`, `patch`, and `test_patch`. The problem statement is served verbatim, so the screenshots appear as GitHub markdown or HTML image links; an agent that wants to see them fetches those URLs itself. The 11 instances whose tests reference images have the downloads baked into the evaluation script by the harness.
+
+The revision is pinned because the upstream split has been reshaped in place before. Only the dev split is served: the test split is graded exclusively by the hosted SWE-bench evaluation service, since the `swebench` harness has no specs or log parsers for its twelve repositories and no evaluation images are published for them.
 
 ## Docker Images
 
@@ -96,6 +109,7 @@ These images are hosted on [Docker Hub](https://hub.docker.com/u/swebench) and c
 **Large tasks** (require more resources):
 - `scikit-learn__scikit-learn-14710`
 - `psf__requests-2317`
+- every `multimodal` task: Chart.js runs headless Chrome under Xvfb, p5.js drives Puppeteer, and wp-calypso runs Jest over a monorepo
 
 These receive 4 vCPU and 8 GB memory.
 
@@ -255,7 +269,7 @@ export DAYTONA_API_URL="your-url"
 export DAYTONA_TARGET="your-target"
 make test
 
-# Run experimental tests (slow, tests all 500 images)
+# Run experimental tests (slow, tests all 600 images)
 make test-experimental
 ```
 
