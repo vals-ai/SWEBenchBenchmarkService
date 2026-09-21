@@ -142,22 +142,25 @@ class TestMultimodalRegistry:
         assert with_images > 90, f"Only {with_images} of {len(dataset_map)} tasks carry images"
 
     @pytest.mark.experimental
-    async def test_images_exist(self) -> None:
-        """Verify all multimodal Docker images resolve (SLOW)."""
+    async def test_images_exist_on_docker_hub(self) -> None:
+        """Every multimodal evaluation image is published under the name the service constructs (SLOW, network)."""
+        import httpx
+
         from swebench_service.benchmark_service import SWEBenchService
 
         service = await SWEBenchService.create()
         task_ids = list(service.get_dataset("multimodal").keys())
+        semaphore = asyncio.Semaphore(8)
 
-        async def check_image(task_id: str) -> tuple[str, bool]:
-            try:
-                response = await service.retrieve_task(task_id, skip_validation=True, dataset="multimodal")
-                assert response.docker_image
-                return task_id, True
-            except Exception:
-                return task_id, False
+        async def check_image(client: httpx.AsyncClient, task_id: str) -> tuple[str, bool]:
+            response = await service.retrieve_task(task_id, skip_validation=True, dataset="multimodal")
+            repository, _, tag = response.docker_image.partition(":")
+            async with semaphore:
+                probe = await client.get(f"https://hub.docker.com/v2/repositories/{repository}/tags/{tag}")
+            return task_id, probe.status_code == 200
 
-        results = await asyncio.gather(*[check_image(tid) for tid in task_ids])
-        failed = [tid for tid, success in results if not success]
+        async with httpx.AsyncClient(timeout=30) as client:
+            results = await asyncio.gather(*[check_image(client, tid) for tid in task_ids])
+        failed = [tid for tid, exists in results if not exists]
 
-        assert len(failed) == 0, f"Failed images: {failed[:10]}"
+        assert len(failed) == 0, f"Images missing from Docker Hub: {failed[:10]}"
