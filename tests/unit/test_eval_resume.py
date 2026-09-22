@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from unittest.mock import AsyncMock
 from benchmark_service.sandbox import (
     DaytonaProviderConfig,
     ExecResult,
@@ -1026,3 +1027,44 @@ async def test_cancelled_resume_sandbox_deletion_finishes_cleanup() -> None:
         await task
 
     assert provider.deleted == [provider.sandbox.id]
+
+
+class StreamingFakeSandbox(FakeSandbox):
+    """A provider that streams downloads, like Daytona, so the transfer can stop at the limit."""
+
+    async def stream_download(self, remote_path: str) -> AsyncGenerator[bytes, None]:
+        self.downloads.append(remote_path)
+        data = self.uploads[remote_path]
+        for offset in range(0, len(data), 4):
+            yield data[offset : offset + 4]
+
+
+async def test_capture_streams_the_download_when_the_provider_can(monkeypatch: pytest.MonkeyPatch) -> None:
+    benchmark = service()
+    sandbox = StreamingFakeSandbox(captured_prediction=b"streamed-patch")
+    sandbox.download_file = AsyncMock(side_effect=AssertionError("whole-file download must not be used"))  # type: ignore[method-assign]
+
+    assert await benchmark._capture_prediction(sandbox) == b"streamed-patch"  # pyright: ignore[reportPrivateUsage]
+    assert len(sandbox.downloads) == 1
+
+
+async def test_capture_stops_a_streamed_download_that_grows_past_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A replaced capture file cannot make the service buffer more than the limit."""
+    benchmark = service()
+    limit = 8
+    sandbox = StreamingFakeSandbox(captured_prediction=b"x" * limit)
+    original_exec = sandbox.exec
+
+    async def swap_after_stat(command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
+        result = await original_exec(command, cwd=cwd, timeout=timeout)
+        if PREDICTION_CAPTURE_COMMAND in command:
+            match = re.search(r">\s*(\S+)", command)
+            assert match is not None
+            sandbox.uploads[match.group(1)] = b"x" * (limit * 4)
+        return result
+
+    sandbox.exec = swap_after_stat  # type: ignore[method-assign]
+    monkeypatch.setattr(service_module, "MAX_PREDICTION_BYTES", limit)
+
+    with pytest.raises(ValueError, match="size limit"):
+        await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]

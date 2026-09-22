@@ -166,6 +166,25 @@ async def _create_owned_sandbox(
         raise
 
 
+async def _download_bounded(sandbox: Sandbox, path: str, *, limit: int) -> bytes:
+    """Download a sandbox file, refusing to buffer more than `limit` bytes.
+
+    The capture file is read-only and its size was checked first, but a process still
+    running in the sandbox could unlink and replace the path in between. Providers that
+    stream (Daytona does) let the transfer stop at the limit; the plain download is the
+    fallback for a provider that only offers whole-file reads.
+    """
+    stream = getattr(sandbox, "stream_download", None)
+    if stream is None:
+        return await sandbox.download_file(path)
+    data = bytearray()
+    async for chunk in cast(AsyncGenerator[bytes, None], stream(path)):
+        data.extend(chunk)
+        if len(data) > limit:
+            raise ValueError(f"SWE-bench prediction exceeds the {limit}-byte size limit")
+    return bytes(data)
+
+
 class SWEBenchService(BenchmarkService):
     """SWE-bench benchmark implementation."""
 
@@ -456,10 +475,12 @@ class SWEBenchService(BenchmarkService):
             # could lose output across a Daytona websocket reconnect and end a large patch
             # short with no command error, which surfaced as invalid base64 on the test-split
             # tasks whose agents leave multi-megabyte artifacts in the working tree.
-            prediction = cast(bytes, await with_retry(sandbox, lambda: sandbox.download_file(capture_path)))
+            prediction = cast(
+                bytes, await with_retry(sandbox, lambda: _download_bounded(sandbox, capture_path, limit=MAX_PREDICTION_BYTES))
+            )
             if len(prediction) != expected_size:
                 raise RuntimeError(
-                    "Captured SWE-bench prediction changed size during streaming: "
+                    "Captured SWE-bench prediction changed size between capture and download: "
                     f"expected {expected_size} bytes, got {len(prediction)}"
                 )
             return prediction
