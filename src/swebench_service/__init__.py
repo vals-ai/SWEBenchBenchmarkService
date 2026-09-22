@@ -13,15 +13,16 @@ from swebench_service.dataset import (
 from swebench_service.evaluation import EchoedPrediction, echo_prediction, grade_test_output
 from swebench_service.schemas import EvaluationResult
 from swebench_service.test_spec import (
-    EVAL_OUTPUT_PATH,
     asset_restore_commands,
     asset_sandbox_path,
     create_evaluation_script,
     create_run_command,
+    EVAL_OUTPUT_PATH,
     get_pre_install_commands,
     make_test_spec,
     task_row_summary,
     test_patch_assets,
+    trim_log_preamble,
 )
 
 __all__ = [
@@ -46,4 +47,5 @@ __all__ = [
     "setup_dataset",
     "task_row_summary",
     "test_patch_assets",
+    "trim_log_preamble",
 ]

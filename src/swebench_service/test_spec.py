@@ -1,6 +1,7 @@
 """Test specification and script generation utilities."""
 
 import json
+import re
 import shlex
 from functools import lru_cache
 from pathlib import Path
@@ -80,6 +81,21 @@ def asset_restore_commands(assets: list[dict[str, str]]) -> list[str]:
     ]
 
 
+# The harness preamble logs `git show` and the working tree's diff against the base commit before the
+# tests. Neither is graded, and both are unbounded: the task images carry a squashed single-commit
+# history, so `git show` prints the whole repository as one diff (PrismJS: 529 files, minified JS on
+# single lines), and the diff repeats the agent's patch, which build artifacts can push to tens of MB.
+# Streamed through the sandbox PTY they drop the session, so only their headers are kept.
+_PREAMBLE_GIT_SHOW = re.compile(r"^git show$", re.MULTILINE)
+_PREAMBLE_GIT_DIFF = re.compile(r"^(git -c core\.fileMode=false diff) ([0-9a-f]{40})$", re.MULTILINE)
+
+
+def trim_log_preamble(evaluation_script: str) -> str:
+    """Keep the preamble's `git show` and base-commit diff to their headers."""
+    evaluation_script = _PREAMBLE_GIT_SHOW.sub("git show --no-patch", evaluation_script)
+    return _PREAMBLE_GIT_DIFF.sub(r"\1 --stat \2", evaluation_script)
+
+
 def create_evaluation_script(test_spec: TestSpec, task_id: str, restore_commands: list[str] | None = None) -> str:
     """
     Create the evaluation script for running tests.
@@ -92,7 +108,7 @@ def create_evaluation_script(test_spec: TestSpec, task_id: str, restore_commands
     Returns:
         Evaluation script content as a string
     """
-    evaluation_script = test_spec.eval_script
+    evaluation_script = trim_log_preamble(test_spec.eval_script)
 
     # BUG: Scikit-learn C extensions use OpenMP for parallelism. In constrained sandbox
     # environments, thread oversubscription causes deadlocks during test execution.

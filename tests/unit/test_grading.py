@@ -16,6 +16,7 @@ from swebench_service import (
     get_pre_install_commands,
     grade_test_output,
     test_patch_assets as patch_assets,
+    trim_log_preamble,
 )
 from swebench_service.benchmark_service import SWEBenchService
 from swebench_service.evaluation import MAX_ECHOED_PREDICTION_BYTES, echo_prediction
@@ -120,6 +121,35 @@ class TestEvaluationScript:
         spec = _spec("pass_and_fail", f2p=["t"], p2p=[])
         assert create_evaluation_script(spec, spec.instance_id, []) == spec.eval_script
         assert create_evaluation_script(spec, spec.instance_id) == spec.eval_script
+
+    def test_the_preamble_logs_headers_instead_of_the_whole_repository(self) -> None:
+        """The images have a squashed history, so `git show` there is the entire repo as one diff."""
+        base = "716923f458c2ba90b5a4ec3ab41dcae8bc0a9917"
+        preamble = [
+            "#!/bin/bash",
+            "set -uxo pipefail",
+            "cd /testbed",
+            "git config --global --add safe.directory /testbed",
+            "source $NVM_DIR/nvm.sh",
+            "git status",
+            "git show",
+            f"git -c core.fileMode=false diff {base}",
+            f"git checkout {base} tests/languages/fsharp/keyword_feature.test",
+        ]
+        spec = _spec("pass_and_fail", f2p=["t"], p2p=[])
+        spec.eval_script_list = [*preamble, *spec.eval_script_list]
+        script = create_evaluation_script(spec, spec.instance_id)
+        lines = script.split("\n")
+        assert "git show --no-patch" in lines and "git show" not in lines
+        assert f"git -c core.fileMode=false diff --stat {base}" in lines
+        assert f"git -c core.fileMode=false diff {base}" not in lines
+        # Everything else, including the test-file checkout that names the same commit, is untouched.
+        assert script.endswith("\n".join(spec.eval_script_list[-4:]) + "\n")
+        assert f"git checkout {base} tests/languages/fsharp/keyword_feature.test" in lines
+
+    def test_trim_leaves_other_git_commands_alone(self) -> None:
+        script = "git show --stat\ngit diff HEAD -- package.json\ngit show HEAD:file\n: 'marker'"
+        assert trim_log_preamble(script) == script
 
     def test_patch_assets_read_path_and_url_from_both_patch_lists(self) -> None:
         spec = _spec(
