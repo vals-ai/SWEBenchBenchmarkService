@@ -7,6 +7,7 @@ import json
 import logging
 import shlex
 from base64 import b64decode
+from urllib.parse import urlsplit
 from binascii import Error as Base64Error
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -86,7 +87,11 @@ MULTIMODAL_DATASETS = frozenset({MULTIMODAL_DATASET, MULTIMODAL_DEV_DATASET})
 # allocation the large Verified tasks already use.
 MULTIMODAL_RESOURCES = Resources(vcpu=4, memory=8, disk=10)
 # Binary test assets (rendering baselines) are fetched from the dataset's URLs at grading time.
+# Only https URLs on these hosts are fetched, redirects are refused, and a body over the cap is
+# rejected, so a dataset revision cannot steer the service at internal endpoints or exhaust it.
 ASSET_FETCH_TIMEOUT_SECONDS = 60.0
+ASSET_HOSTS = frozenset({"raw.githubusercontent.com"})
+MAX_ASSET_BYTES = 20 * 1024 * 1024
 _AGENT_BASELINE_TRAP = f"""
 _record_agent_baseline() {{
     setup_status=$?
@@ -520,19 +525,31 @@ class SWEBenchService(BenchmarkService):
         assets = test_patch_assets(test_spec)
         if not assets:
             return []
-        async with httpx.AsyncClient(timeout=ASSET_FETCH_TIMEOUT_SECONDS, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=ASSET_FETCH_TIMEOUT_SECONDS, follow_redirects=False) as client:
             for asset in assets:
-                if not asset["url"]:
-                    raise RuntimeError(f"Test asset {asset['path']} for {test_spec.instance_id} has no source URL")
+                url = asset["url"]
+                parts = urlsplit(url)
+                if parts.scheme != "https" or parts.hostname not in ASSET_HOSTS:
+                    raise RuntimeError(
+                        f"Test asset {asset['path']} for {test_spec.instance_id} has a source outside the allowed "
+                        f"hosts ({', '.join(sorted(ASSET_HOSTS))}): {url or '<none>'}"
+                    )
                 try:
-                    response = await client.get(asset["url"])
-                    response.raise_for_status()
+                    async with client.stream("GET", url) as response:
+                        response.raise_for_status()
+                        data = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            data.extend(chunk)
+                            if len(data) > MAX_ASSET_BYTES:
+                                raise RuntimeError(
+                                    f"Test asset {asset['path']} for {test_spec.instance_id} exceeds {MAX_ASSET_BYTES} bytes"
+                                )
                 except httpx.HTTPError as exc:
                     raise RuntimeError(
                         f"Could not fetch test asset {asset['path']} for {test_spec.instance_id}: {exc}"
                     ) from exc
-                data = response.content
-                await with_retry(sandbox, lambda: sandbox.upload_file(asset_sandbox_path(asset["path"]), data))
+                payload = bytes(data)
+                await with_retry(sandbox, lambda: sandbox.upload_file(asset_sandbox_path(asset["path"]), payload))
         return asset_restore_commands(assets)
 
     async def _evaluate_prediction(

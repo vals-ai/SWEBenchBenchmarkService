@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 import pytest
-from swebench.harness.constants import END_TEST_OUTPUT, START_TEST_OUTPUT
+from swebench.harness.constants import END_TEST_OUTPUT, START_TEST_OUTPUT, TEST_EXIT_CODE
 from swebench.harness.utils import TestSpec
 
 from swebench_service import (
@@ -33,8 +33,9 @@ def _spec(eval_type: str, *, f2p: list[str], p2p: list[str], image_assets: dict[
     )
 
 
-def _log(*lines: str) -> str:
-    return "\n".join(["setup", START_TEST_OUTPUT, *lines, END_TEST_OUTPUT, "done"])
+def _log(*lines: str, exit_code: int | None = None) -> str:
+    trailer = [f"{TEST_EXIT_CODE}: {exit_code}"] if exit_code is not None else []
+    return "\n".join(["setup", START_TEST_OUTPUT, *lines, END_TEST_OUTPUT, *trailer, "done"])
 
 
 class TestGradeTestOutput:
@@ -65,6 +66,26 @@ class TestGradeTestOutput:
         assert result.patch_successfully_applied is False
         assert result.resolved is False
 
+    def test_a_nonzero_exit_with_only_passes_reported_invalidates_the_run(self) -> None:
+        """A patch can print its own PASSED lines; the recorded exit status exposes that."""
+        spec = _spec("fail_only", f2p=["tests/a.py::test_fix"], p2p=[])
+        result = grade_test_output(_log("PASSED tests/a.py::test_fix", exit_code=1), spec, "diff")
+        assert result.patch_successfully_applied is False
+        assert result.resolved is False
+
+    def test_a_nonzero_exit_with_a_reported_failure_is_graded_normally(self) -> None:
+        spec = _spec("pass_and_fail", f2p=["tests/a.py::test_fix"], p2p=["tests/a.py::test_old"])
+        result = grade_test_output(
+            _log("PASSED tests/a.py::test_fix", "FAILED tests/a.py::test_old", exit_code=1), spec, "diff"
+        )
+        assert result.patch_successfully_applied is True
+        assert result.resolved is False
+        assert result.pass_to_pass == {"success": [], "failure": ["tests/a.py::test_old"]}
+
+    def test_a_zero_exit_grades_normally(self) -> None:
+        spec = _spec("fail_only", f2p=["tests/a.py::test_fix"], p2p=[])
+        assert grade_test_output(_log("PASSED tests/a.py::test_fix", exit_code=0), spec, "diff").resolved is True
+
     def test_missing_markers_mean_the_patch_did_not_apply(self) -> None:
         spec = _spec("pass_and_fail", f2p=["tests/a.py::test_fix"], p2p=[])
         result = grade_test_output("error: patch failed", spec, "diff")
@@ -83,6 +104,14 @@ class TestEvaluationScript:
         assert lines[marker - 1] == restore[0]
         assert restore[0] == "mkdir -p $(dirname cases/a/expected.png) && cp /image_assets/cases__a__expected.png cases/a/expected.png"
         assert asset_sandbox_path("cases/a/expected.png") == "/image_assets/cases__a__expected.png"
+
+    def test_asset_paths_are_shell_quoted(self) -> None:
+        """A dataset path is data, not shell; it must not be able to run commands in the sandbox."""
+        [line] = asset_restore_commands([{"path": "a b/$(touch pwned).png", "url": "https://x/e.png"}])
+        assert line == (
+            "mkdir -p $(dirname 'a b/$(touch pwned).png') && "
+            "cp '/image_assets/a b__$(touch pwned).png' 'a b/$(touch pwned).png'"
+        )
 
     def test_without_assets_the_script_is_the_rows_eval_script(self) -> None:
         spec = _spec("pass_and_fail", f2p=["t"], p2p=[])
@@ -116,6 +145,10 @@ class TestPreInstall:
         assert get_pre_install_commands("astropy/astropy", "5.1")[0].startswith("sed -i")
         assert get_pre_install_commands("django/django", "4.2") == []
         assert get_pre_install_commands("chartjs/Chart.js", "2.0") == []
+
+
+GOOD = "https://raw.githubusercontent.com/org/repo/abc123/cases/a/expected.png"
+MISSING = "https://raw.githubusercontent.com/org/repo/abc123/cases/a/missing.png"
 
 
 class _FakeSandbox:
@@ -154,8 +187,8 @@ class TestAssetStaging:
         return restore, sandbox
 
     async def test_assets_are_uploaded_and_restore_lines_returned(self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch) -> None:
-        spec = _spec("pass_and_fail", f2p=["t"], p2p=[], image_assets={"test_patch": [{"path": "c/e.png", "url": "https://x/e.png"}]})
-        restore, sandbox = await self._stage(service, spec, {"https://x/e.png": (200, b"PNG")}, monkeypatch)
+        spec = _spec("pass_and_fail", f2p=["t"], p2p=[], image_assets={"test_patch": [{"path": "c/e.png", "url": GOOD}]})
+        restore, sandbox = await self._stage(service, spec, {GOOD: (200, b"PNG")}, monkeypatch)
         assert sandbox.uploads == {"/image_assets/c__e.png": b"PNG"}
         assert restore == ["mkdir -p $(dirname c/e.png) && cp /image_assets/c__e.png c/e.png"]
 
@@ -166,12 +199,39 @@ class TestAssetStaging:
 
     async def test_an_unfetchable_asset_fails_the_evaluation(self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch) -> None:
         """Grading without the baseline would score the model zero for an infrastructure fault."""
-        spec = _spec("pass_and_fail", f2p=["t"], p2p=[], image_assets={"test_patch": [{"path": "c/e.png", "url": "https://x/missing.png"}]})
+        spec = _spec("pass_and_fail", f2p=["t"], p2p=[], image_assets={"test_patch": [{"path": "c/e.png", "url": MISSING}]})
         with pytest.raises(RuntimeError, match="Could not fetch test asset c/e.png"):
             await self._stage(service, spec, {}, monkeypatch)
 
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://raw.githubusercontent.com/o/r/c/e.png",
+            "https://evil.example.com/e.png",
+            "https://169.254.169.254/latest/meta-data/",
+            "file:///etc/passwd",
+        ],
+    )
+    async def test_an_asset_outside_the_allowed_hosts_is_refused_without_a_request(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch, url: str
+    ) -> None:
+        spec = _spec("pass_and_fail", f2p=["t"], p2p=[], image_assets={"test_patch": [{"path": "c/e.png", "url": url}]})
+        with pytest.raises(RuntimeError, match="outside the allowed hosts"):
+            await self._stage(service, spec, {url: (200, b"PNG")}, monkeypatch)
+
+    async def test_a_redirect_is_refused(self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch) -> None:
+        spec = _spec("pass_and_fail", f2p=["t"], p2p=[], image_assets={"test_patch": [{"path": "c/e.png", "url": GOOD}]})
+        with pytest.raises(RuntimeError, match="Could not fetch test asset"):
+            await self._stage(service, spec, {GOOD: (302, b"")}, monkeypatch)
+
+    async def test_an_oversized_asset_is_refused(self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("swebench_service.benchmark_service.MAX_ASSET_BYTES", 8)
+        spec = _spec("pass_and_fail", f2p=["t"], p2p=[], image_assets={"test_patch": [{"path": "c/e.png", "url": GOOD}]})
+        with pytest.raises(RuntimeError, match="exceeds 8 bytes"):
+            await self._stage(service, spec, {GOOD: (200, b"PNG" * 10)}, monkeypatch)
+
     async def test_an_asset_without_a_url_fails_the_evaluation(self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch) -> None:
         spec = _spec("pass_and_fail", f2p=["t"], p2p=[], image_assets={"test_patch": [{"path": "c/e.png"}]})
-        with pytest.raises(RuntimeError, match="has no source URL"):
+        with pytest.raises(RuntimeError, match="outside the allowed hosts .*<none>"):
             await self._stage(service, spec, {}, monkeypatch)
 

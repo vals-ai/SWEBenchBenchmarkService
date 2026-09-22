@@ -85,7 +85,7 @@ The Vals Index subset can be fetched by passing in `dataset=vals_index` in the [
 
 Instances carry the same fields as Verified plus `image_assets`, a map of the image URLs found in the `problem_statement`, `patch`, and `test_patch`. The problem statement is served verbatim, so the screenshots appear as GitHub markdown or HTML image links; an agent that wants to see them fetches those URLs itself.
 
-Binary test assets (rendering baselines such as `expected.png`, which a text patch cannot carry) are listed under `image_assets.test_patch` with a source URL. At grading time the service fetches each one, uploads it to `/image_assets/` in the sandbox, and inserts restore commands into the evaluation script just before the test-output marker, so the files land after the script's own `git apply` and never live in the task image. An asset that cannot be fetched fails the evaluation rather than scoring the model zero.
+Binary test assets (rendering baselines such as `expected.png`, which a text patch cannot carry) are listed under `image_assets.test_patch` with a source URL. At grading time the service fetches each one, uploads it to `/image_assets/` in the sandbox, and inserts restore commands into the evaluation script just before the test-output marker, so the files land after the script's own `git apply` and never live in the task image. Only https URLs on `raw.githubusercontent.com` (the host every pinned asset uses) are fetched, redirects are refused, and bodies over 20 MB are rejected. An asset that cannot be fetched fails the evaluation rather than scoring the model zero.
 
 The revision is pinned because the upstream split has been reshaped in place before.
 

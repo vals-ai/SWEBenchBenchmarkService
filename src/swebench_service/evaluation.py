@@ -17,6 +17,7 @@ from swebench.harness.constants import (
     TESTS_TIMEOUT,
     EvalType,
     ResolvedStatus,
+    TestStatus,
 )
 from swebench.harness.grading import (
     PARSER_REGISTRY,
@@ -25,6 +26,7 @@ from swebench.harness.grading import (
     compute_pass_to_pass,
     get_eval_tests_report,
     get_resolution_status,
+    parse_test_exit_code,
 )
 from swebench.harness.utils import TestSpec
 
@@ -96,6 +98,20 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
     # EvalType.FAIL_ONLY an absent test counts as success, so without this a suite that
     # never started would grade as resolved.
     if not status_map and not SUITE_RAN.search(test_output):
+        return EvaluationResult(
+            patch_successfully_applied=False,
+            resolved=False,
+            resolution_status="NO",
+            prediction=prediction,
+        )
+
+    # A patch can print its own "PASSED" lines (from a conftest.py hook, say), so
+    # cross-check the log against the test command's exit status, which the eval script
+    # records after the end marker. Exiting non-zero while reporting no failure at all
+    # means the log is not describing the run that actually happened.
+    exit_code = parse_test_exit_code(test_output)
+    reported_failure = any(status in (TestStatus.FAILED.value, TestStatus.ERROR.value) for status in status_map.values())
+    if exit_code not in (None, 0) and status_map and not reported_failure:
         return EvaluationResult(
             patch_successfully_applied=False,
             resolved=False,

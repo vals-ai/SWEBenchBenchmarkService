@@ -1,6 +1,7 @@
 """Test specification and script generation utilities."""
 
 import json
+import shlex
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
@@ -73,7 +74,10 @@ def asset_sandbox_path(repo_path: str) -> str:
 
 def asset_restore_commands(assets: list[dict[str, str]]) -> list[str]:
     """Shell lines that copy each staged asset into place, run after the eval script's `git apply`."""
-    return [f"mkdir -p $(dirname {asset['path']}) && cp {asset_sandbox_path(asset['path'])} {asset['path']}" for asset in assets]
+    return [
+        f"mkdir -p $(dirname {shlex.quote(asset['path'])}) && cp {shlex.quote(asset_sandbox_path(asset['path']))} {shlex.quote(asset['path'])}"
+        for asset in assets
+    ]
 
 
 def create_evaluation_script(test_spec: TestSpec, task_id: str, restore_commands: list[str] | None = None) -> str:
