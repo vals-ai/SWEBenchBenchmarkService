@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from benchmark_service import BenchmarkService
 from benchmark_service.sandbox import (
+    ExecResult,
     ImageSource,
     Sandbox,
     SandboxCommandError,
@@ -64,10 +65,26 @@ PROBLEM_STATEMENT_PATH = "/tmp/problem_statement.txt"
 PREDICTION_PATH = "/tmp/swebench-prediction.patch"
 AGENT_BASELINE_TREE_PATH = "/tmp/swebench-agent-baseline.tree"
 AGENT_BASELINE_INDEX_PATH = "/tmp/swebench-agent-baseline.index"
+# Untracked files above this size are build or report artifacts (Lighthouse writes its `latest-run`
+# output into the repo, test runs leave logs), never source changes: gold patches are kilobytes.
+# Leaving them out keeps the patch, its result frame, and the eval script's `git apply` bounded, and
+# keeps `git diff` off files a leftover agent process may still be writing.
+MAX_PATCH_FILE_BYTES = 1024 * 1024
+# `git add -N` / `git diff` fail when a file changes size under them (an agent's background test run
+# still writing); the tree settles within seconds once the agent has exited.
+CAPTURE_ATTEMPTS = 3
+CAPTURE_RETRY_DELAY_SECONDS = 5.0
 PREDICTION_CAPTURE_COMMAND = (
     f"umask 077; baseline=$(cat {AGENT_BASELINE_TREE_PATH}) "
-    "&& git add -N . "
-    '&& git diff --binary --full-index --no-ext-diff --no-textconv --no-color "$baseline" --'
+    "&& exclude=$(mktemp) "
+    "&& git ls-files --others --exclude-standard | while IFS= read -r f; do "
+    f'[ -f "$f" ] && [ "$(stat -c %s -- "$f")" -gt {MAX_PATCH_FILE_BYTES} ] '
+    # gitignore syntax: anchor at the repo root and escape its glob characters
+    + r"&& printf '/%s\n' " + '"$f"' + r" | sed 's/[][*?\\]/\\&/g'; "
+    + 'done > "$exclude"; '
+    + "sed 's/^/excluded /' \"$exclude\" "
+    + '&& git -c core.excludesFile="$exclude" add -N . '
+    + '&& git diff --binary --full-index --no-ext-diff --no-textconv --no-color "$baseline" --'
 )
 PREDICTION_CAPTURE_PATH_PREFIX = "/tmp/swebench-prediction-capture"
 COMMAND_QUIET_SECONDS = 300.0
@@ -431,7 +448,14 @@ class SWEBenchService(BenchmarkService):
 
         # Get agent's prediction (git diff)
         yield StreamMessageChunk(type="message", data="Capturing agent's changes...")
-        prediction_bytes = await self._capture_prediction(sandbox)
+        excluded: list[str] = []
+        prediction_bytes = await self._capture_prediction(sandbox, excluded=excluded)
+        if excluded:
+            shown = ", ".join(excluded[:20]) + (" ..." if len(excluded) > 20 else "")
+            yield StreamMessageChunk(
+                type="message",
+                data=f"Left {len(excluded)} untracked file(s) over {MAX_PATCH_FILE_BYTES} bytes out of the patch: {shown}",
+            )
 
         task_data = await self.retrieve_task(task_id, skip_validation=True, dataset=dataset)
         resume_state = await persist_prediction(
@@ -447,7 +471,12 @@ class SWEBenchService(BenchmarkService):
         async for chunk in self._evaluate_prediction(task_id, sandbox, prediction, dataset=dataset):
             yield chunk
 
-    async def _capture_prediction(self, sandbox: Sandbox) -> bytes:
+    async def _capture_prediction(self, sandbox: Sandbox, *, excluded: list[str] | None = None) -> bytes:
+        """Capture the agent's patch against the post-setup baseline.
+
+        `excluded`, when given, receives the untracked paths left out for exceeding
+        MAX_PATCH_FILE_BYTES (in gitignore form: root-anchored, glob characters escaped).
+        """
         capture_path = f"{PREDICTION_CAPTURE_PATH_PREFIX}-{uuid4().hex}.patch"
         quoted_capture_path = shlex.quote(capture_path)
         capture_command = (
@@ -456,17 +485,12 @@ class SWEBenchService(BenchmarkService):
             f"&& chmod 0400 {quoted_capture_path} && stat -c %s -- {quoted_capture_path}"
         )
         try:
-            result = await with_retry(
-                sandbox,
-                lambda: sandbox.exec(
-                    capture_command,
-                    cwd="/testbed",
-                ),
-            )
-            if result.exit_code != 0:
-                raise RuntimeError(f"Failed to capture SWE-bench prediction:\n{result.output}")
+            result = await self._run_capture_command(sandbox, capture_command)
+            lines = [line.strip() for line in result.output.strip().splitlines()]
+            if excluded is not None:
+                excluded.extend(line.removeprefix("excluded ") for line in lines[:-1] if line.startswith("excluded "))
             try:
-                expected_size = int(result.output.strip().splitlines()[-1])
+                expected_size = int(lines[-1])
             except (IndexError, ValueError) as exc:
                 raise RuntimeError("Failed to read captured SWE-bench prediction size") from exc
             if not 0 <= expected_size <= MAX_PREDICTION_BYTES:
@@ -491,6 +515,17 @@ class SWEBenchService(BenchmarkService):
                 await sandbox.exec(f"rm -f -- {capture_path}", cwd="/testbed")
             except Exception:
                 logger.exception("Failed to remove SWE-bench prediction capture %s", capture_path)
+
+    async def _run_capture_command(self, sandbox: Sandbox, capture_command: str) -> ExecResult:
+        for attempt in range(1, CAPTURE_ATTEMPTS + 1):
+            result = cast(ExecResult, await with_retry(sandbox, lambda: sandbox.exec(capture_command, cwd="/testbed")))
+            if result.exit_code == 0:
+                return result
+            if attempt == CAPTURE_ATTEMPTS:
+                raise RuntimeError(f"Failed to capture SWE-bench prediction:\n{result.output}")
+            logger.warning("SWE-bench prediction capture attempt %d failed, retrying:\n%s", attempt, result.output)
+            await asyncio.sleep(CAPTURE_RETRY_DELAY_SECONDS)
+        raise AssertionError("unreachable")
 
     async def _stage_image_assets(self, sandbox: Sandbox, test_spec: TestSpec) -> list[str]:
         """Upload the binary assets the test patch needs and return the lines that restore them.

@@ -44,7 +44,7 @@ class FakeSandbox(Sandbox):
     async def exec(self, command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
         self.commands.append((command, cwd))
         if PREDICTION_CAPTURE_COMMAND in command:
-            match = re.search(r">\s*(\S+)", command)
+            match = re.search(r">\s*(\S*swebench-prediction-capture\S*)", command)
             capture_path = match.group(1) if match is not None else "/tmp/swebench-prediction.patch"
             self.uploads[capture_path] = b""
             return ExecResult(exit_code=0, output="0")

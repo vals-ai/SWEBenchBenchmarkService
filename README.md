@@ -233,7 +233,7 @@ Returns aggregate score as percentage of resolved tasks:
 
 The evaluation follows SWE-bench's official grading methodology:
 
-1. **Capture Prediction:** Extract agent's changes via `git diff`
+1. **Capture Prediction:** Extract the agent's changes via `git diff` against the post-setup baseline. Untracked files over 1 MiB are left out (they are build or report artifacts such as Lighthouse's `latest-run` output, never source changes, and they made patches of tens of MB); the evaluation stream names each one. The capture is retried up to three times when git fails on a file a leftover agent process is still writing.
 2. **Run Tests:** Execute the test suite using the task's evaluation script. The script's own log preamble is trimmed first: its `git show` becomes `git show --no-patch` and its base-commit diff becomes `--stat`, because the task images carry a squashed single-commit history (so `git show` is the whole repository as one diff) and the full diff repeats the agent's patch; neither is graded, and both flood the sandbox stream.
 3. **Parse Output:** Extract test results from output using repository-specific parsers
 4. **Grade Results:** Compare against gold test specifications:
