@@ -24,6 +24,7 @@ from benchmark_service.schemas import EvaluateResponseRequest, Resources, Stream
 from pydantic import ValidationError
 
 import swebench_service.benchmark_service as service_module
+from swebench_service.evaluation import EchoedPrediction
 from swebench_service.benchmark_service import (
     PREDICTION_CAPTURE_COMMAND,
     PREDICTION_CAPTURE_PATH_PREFIX,
@@ -376,7 +377,7 @@ async def test_failed_evaluation_resumes_from_exact_persisted_patch(
     async def fail_evaluation(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         nonlocal evaluation_started
@@ -406,14 +407,14 @@ async def test_failed_evaluation_resumes_from_exact_persisted_patch(
     async def succeed_evaluation(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
-        evaluated_predictions.append(prediction)
+        evaluated_predictions.append(prediction.text)
         yield StreamResultChunk(
             type="result",
             data=EvaluationResult(
-                prediction=prediction,
+                **prediction.fields(),
                 patch_successfully_applied=True,
                 resolved=True,
                 resolution_status="FULL",
@@ -456,7 +457,7 @@ async def test_resume_deletes_sandbox_when_evaluation_fails(monkeypatch: pytest.
     async def fail_evaluation(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         if False:
@@ -520,7 +521,7 @@ async def test_resume_rejects_changed_task_contract_before_loading_artifact(
     async def stop_after_checkpoint(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         del task_id, sandbox, prediction, dataset
@@ -667,7 +668,7 @@ async def test_resume_honors_dataset_carried_by_request(monkeypatch: pytest.Monk
     async def evaluate_prediction(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         evaluated_datasets.append(dataset)
@@ -746,7 +747,7 @@ async def test_upload_failure_does_not_start_evaluation_or_emit_checkpoint(
     async def evaluation(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         nonlocal evaluation_started
@@ -781,10 +782,10 @@ async def test_empty_prediction_resumes_without_git_apply(monkeypatch: pytest.Mo
     async def evaluation(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
-        assert prediction is None
+        assert prediction.text is None
         yield StreamResultChunk(type="result", data={"resolved": False})
 
     monkeypatch.setattr(benchmark, "_evaluate_prediction", evaluation)

@@ -10,7 +10,7 @@ from swebench_service.dataset import (
     load_vals_index_subset,
     setup_dataset,
 )
-from swebench_service.evaluation import grade_test_output
+from swebench_service.evaluation import EchoedPrediction, echo_prediction, grade_test_output
 from swebench_service.schemas import EvaluationResult
 from swebench_service.test_spec import (
     EVAL_OUTPUT_PATH,
@@ -35,6 +35,8 @@ __all__ = [
     "create_evaluation_script",
     "create_run_command",
     "get_pre_install_commands",
+    "EchoedPrediction",
+    "echo_prediction",
     "grade_test_output",
     "load_dataset_from_disk",
     "load_multimodal_dataset_from_disk",

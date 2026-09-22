@@ -5,7 +5,7 @@ We isolate this file from other utilities as all dependencies come from the sweb
 
 import re
 import unicodedata
-from typing import Any
+from typing import Any, NamedTuple
 
 from swebench.harness.constants import (
     APPLY_PATCH_FAIL,
@@ -34,24 +34,38 @@ from swebench.harness.utils import TestSpec
 from swebench_service.schemas import EvaluationResult
 
 # The result is one WebSocket frame, and the framework client drops a frame over 10 MiB, which
-# ends the evaluation and every resume of it. The echoed patch is the only unbounded field, so it
-# is cut here; the full patch is the persisted prediction artifact, and `prediction_bytes` gives
-# its real size.
+# ends the evaluation and every resume of it. The echoed patch is the only unbounded field, so
+# only its head is decoded and sent; the full patch is the persisted prediction artifact, and
+# `prediction_bytes` gives its real size.
 MAX_ECHOED_PREDICTION_BYTES = 1024 * 1024
 
 
-def prediction_fields(prediction: str | None) -> dict[str, Any]:
-    """The `prediction*` fields of an EvaluationResult for a captured patch."""
-    if prediction is None:
-        return {"prediction": None}
-    encoded = prediction.encode("utf-8")
-    if len(encoded) <= MAX_ECHOED_PREDICTION_BYTES:
-        return {"prediction": prediction, "prediction_bytes": len(encoded)}
-    head = encoded[:MAX_ECHOED_PREDICTION_BYTES].decode("utf-8", errors="ignore")
-    return {"prediction": head, "prediction_bytes": len(encoded), "prediction_truncated": True}
+class EchoedPrediction(NamedTuple):
+    """What the evaluation result says about the captured patch."""
+
+    text: str | None
+    size: int | None
+    truncated: bool
+
+    def fields(self) -> dict[str, Any]:
+        return {"prediction": self.text, "prediction_bytes": self.size, "prediction_truncated": self.truncated}
 
 
-def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | None) -> EvaluationResult:
+def echo_prediction(patch: bytes) -> EchoedPrediction:
+    """Decode at most MAX_ECHOED_PREDICTION_BYTES of the patch, never splitting a character."""
+    if not patch:
+        return EchoedPrediction(None, None, False)
+    if len(patch) <= MAX_ECHOED_PREDICTION_BYTES:
+        return EchoedPrediction(patch.decode("utf-8", errors="replace"), len(patch), False)
+    cut = MAX_ECHOED_PREDICTION_BYTES
+    while cut > 0 and patch[cut] & 0xC0 == 0x80:  # a continuation byte: back up to the split character's lead byte
+        cut -= 1
+    return EchoedPrediction(patch[:cut].decode("utf-8", errors="replace"), len(patch), True)
+
+
+def grade_test_output(
+    test_output: str, test_spec: TestSpec, prediction: EchoedPrediction | str | None
+) -> EvaluationResult:
     """
     Grade test output in memory using SWE-bench's logic.
 
@@ -61,12 +75,14 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
     Args:
         test_output: The output from running tests
         test_spec: The test specification for this task
-        prediction: The patch/diff that was applied (optional)
+        prediction: The captured patch, as `echo_prediction` describes it (a plain string is echoed as is)
 
     Returns:
         EvaluationResult with resolved status, scores, and detailed test results
     """
-    echoed = prediction_fields(prediction)
+    if not isinstance(prediction, EchoedPrediction):
+        prediction = echo_prediction(prediction.encode("utf-8") if prediction is not None else b"")
+    echoed = prediction.fields()
 
     # Check for error codes
     bad_codes = [

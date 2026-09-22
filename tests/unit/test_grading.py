@@ -18,7 +18,7 @@ from swebench_service import (
     test_patch_assets as patch_assets,
 )
 from swebench_service.benchmark_service import SWEBenchService
-from swebench_service.evaluation import MAX_ECHOED_PREDICTION_BYTES
+from swebench_service.evaluation import MAX_ECHOED_PREDICTION_BYTES, echo_prediction
 
 
 def _spec(eval_type: str, *, f2p: list[str], p2p: list[str], image_assets: dict[str, Any] | None = None) -> TestSpec:
@@ -245,35 +245,48 @@ class TestEchoedPrediction:
 
     def test_a_small_patch_is_echoed_whole(self) -> None:
         spec = _spec("fail_only", f2p=["tests/a.py::test_fix"], p2p=[])
-        result = grade_test_output(_log("PASSED tests/a.py::test_fix"), spec, "diff --git a b\n+é\n")
+        patch = "diff --git a b\n+é\n".encode()
+        result = grade_test_output(_log("PASSED tests/a.py::test_fix"), spec, echo_prediction(patch))
         assert result.prediction == "diff --git a b\n+é\n"
-        assert result.prediction_bytes == len("diff --git a b\n+é\n".encode())
+        assert result.prediction_bytes == len(patch)
         assert result.prediction_truncated is False
+
+    def test_a_plain_string_is_echoed_as_is(self) -> None:
+        spec = _spec("fail_only", f2p=["tests/a.py::test_fix"], p2p=[])
+        result = grade_test_output(_log("PASSED tests/a.py::test_fix"), spec, "diff")
+        assert (result.prediction, result.prediction_bytes, result.prediction_truncated) == ("diff", 4, False)
 
     def test_no_patch_stays_none(self) -> None:
         spec = _spec("fail_only", f2p=["tests/a.py::test_fix"], p2p=[])
-        result = grade_test_output(_log("bash: pytest: command not found"), spec, None)
-        assert result.prediction is None
-        assert result.prediction_bytes is None
-        assert result.prediction_truncated is False
+        for prediction in (None, echo_prediction(b"")):
+            result = grade_test_output(_log("bash: pytest: command not found"), spec, prediction)
+            assert result.prediction is None
+            assert result.prediction_bytes is None
+            assert result.prediction_truncated is False
 
     def test_a_patch_bloated_by_build_artifacts_is_cut_and_the_frame_stays_under_the_limit(self) -> None:
         spec = _spec("fail_only", f2p=["tests/a.py::test_fix"], p2p=[])
-        patch = "diff --git a/latest-run/artifacts.json b/latest-run/artifacts.json\n" + "+x" * (12 * 1024 * 1024)
-        result = grade_test_output(_log("FAILED tests/a.py::test_fix"), spec, patch)
+        patch = b"diff --git a/latest-run/artifacts.json b/latest-run/artifacts.json\n" + b"+x" * (12 * 1024 * 1024)
+        result = grade_test_output(_log("FAILED tests/a.py::test_fix"), spec, echo_prediction(patch))
         assert result.prediction is not None
         assert result.prediction.startswith("diff --git a/latest-run/artifacts.json")
         assert len(result.prediction.encode()) == MAX_ECHOED_PREDICTION_BYTES
-        assert result.prediction_bytes == len(patch.encode())
+        assert result.prediction_bytes == len(patch)
         assert result.prediction_truncated is True
         assert result.resolved is False
         frame = StreamResultChunk(type="result", data=result.model_dump()).model_dump_json()
         assert len(frame.encode()) < 10 * 1024 * 1024
 
     def test_the_cut_never_splits_a_multibyte_character(self) -> None:
-        spec = _spec("fail_only", f2p=["tests/a.py::test_fix"], p2p=[])
-        patch = "é" * (MAX_ECHOED_PREDICTION_BYTES // 2 + 1)  # 2 bytes each, one byte over the bound
-        result = grade_test_output(_log("PASSED tests/a.py::test_fix"), spec, patch)
-        assert result.prediction == "é" * (MAX_ECHOED_PREDICTION_BYTES // 2)
-        assert result.prediction_truncated is True
-        assert result.prediction_bytes == len(patch.encode())
+        # One ASCII byte shifts every two-byte "é" off the bound, so the cut lands inside one of them.
+        patch = ("a" + "é" * (MAX_ECHOED_PREDICTION_BYTES // 2)).encode()
+        echoed = echo_prediction(patch)
+        assert echoed.text == "a" + "é" * (MAX_ECHOED_PREDICTION_BYTES // 2 - 1)
+        assert echoed.text is not None and "\ufffd" not in echoed.text
+        assert echoed == (echoed.text, len(patch), True)
+
+    def test_a_cut_on_a_character_boundary_keeps_the_whole_head(self) -> None:
+        patch = ("é" * (MAX_ECHOED_PREDICTION_BYTES // 2 + 1)).encode()
+        echoed = echo_prediction(patch)
+        assert echoed.text == "é" * (MAX_ECHOED_PREDICTION_BYTES // 2)
+        assert echoed.truncated is True

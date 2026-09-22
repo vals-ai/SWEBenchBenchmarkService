@@ -38,10 +38,12 @@ from swebench_service import (
     EVAL_OUTPUT_PATH,
     MULTIMODAL_DEV_DISK_PATH,
     MULTIMODAL_DISK_PATH,
+    EchoedPrediction,
     asset_restore_commands,
     asset_sandbox_path,
     create_evaluation_script,
     create_run_command,
+    echo_prediction,
     get_pre_install_commands,
     grade_test_output,
     load_dataset_from_disk,
@@ -372,7 +374,7 @@ class SWEBenchService(BenchmarkService):
             raise ValueError("SWE-bench eval resume task contract does not match the current evaluator")
         prediction_bytes = await load_prediction(state)
         yield StreamEvalResumeStateChunk(type="eval_resume_state", data=state.model_dump(mode="json"))
-        prediction = prediction_bytes.decode("utf-8", errors="replace") or None
+        prediction = echo_prediction(prediction_bytes)
 
         async with request.sandbox_provider.create_provider() as provider:
             sandbox = await _create_owned_sandbox(
@@ -440,7 +442,7 @@ class SWEBenchService(BenchmarkService):
             task_contract_sha256=self._task_contract_sha256(task_id, dataset, task_data),
         )
         yield StreamEvalResumeStateChunk(type="eval_resume_state", data=resume_state.model_dump(mode="json"))
-        prediction = prediction_bytes.decode("utf-8", errors="replace") or None
+        prediction = echo_prediction(prediction_bytes)
 
         async for chunk in self._evaluate_prediction(task_id, sandbox, prediction, dataset=dataset):
             yield chunk
@@ -533,7 +535,7 @@ class SWEBenchService(BenchmarkService):
         self,
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Run the existing atomic SWE-bench evaluator for one captured patch."""
