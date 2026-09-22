@@ -5,6 +5,7 @@ We isolate this file from other utilities as all dependencies come from the sweb
 
 import re
 import unicodedata
+from typing import Any
 
 from swebench.harness.constants import (
     APPLY_PATCH_FAIL,
@@ -32,6 +33,23 @@ from swebench.harness.utils import TestSpec
 
 from swebench_service.schemas import EvaluationResult
 
+# The result is one WebSocket frame, and the framework client drops a frame over 10 MiB, which
+# ends the evaluation and every resume of it. The echoed patch is the only unbounded field, so it
+# is cut here; the full patch is the persisted prediction artifact, and `prediction_bytes` gives
+# its real size.
+MAX_ECHOED_PREDICTION_BYTES = 1024 * 1024
+
+
+def prediction_fields(prediction: str | None) -> dict[str, Any]:
+    """The `prediction*` fields of an EvaluationResult for a captured patch."""
+    if prediction is None:
+        return {"prediction": None}
+    encoded = prediction.encode("utf-8")
+    if len(encoded) <= MAX_ECHOED_PREDICTION_BYTES:
+        return {"prediction": prediction, "prediction_bytes": len(encoded)}
+    head = encoded[:MAX_ECHOED_PREDICTION_BYTES].decode("utf-8", errors="ignore")
+    return {"prediction": head, "prediction_bytes": len(encoded), "prediction_truncated": True}
+
 
 def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | None) -> EvaluationResult:
     """
@@ -48,6 +66,8 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
     Returns:
         EvaluationResult with resolved status, scores, and detailed test results
     """
+    echoed = prediction_fields(prediction)
+
     # Check for error codes
     bad_codes = [
         APPLY_PATCH_FAIL,
@@ -61,7 +81,7 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
             patch_successfully_applied=False,
             resolved=False,
             resolution_status="NO",
-            prediction=prediction,
+            **echoed,
         )
 
     # Check for test output markers
@@ -70,7 +90,7 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
             patch_successfully_applied=False,
             resolved=False,
             resolution_status="NO",
-            prediction=prediction,
+            **echoed,
         )
 
     # Get log parser for this task
@@ -102,7 +122,7 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
             patch_successfully_applied=False,
             resolved=False,
             resolution_status="NO",
-            prediction=prediction,
+            **echoed,
         )
 
     # A patch can print its own "PASSED" lines (from a conftest.py hook, say), so
@@ -116,7 +136,7 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
             patch_successfully_applied=False,
             resolved=False,
             resolution_status="NO",
-            prediction=prediction,
+            **echoed,
         )
 
     # BUG: Remove all unicode characters that are control characters
@@ -143,7 +163,7 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
     p2p_score = compute_pass_to_pass(report)
 
     return EvaluationResult(
-        prediction=prediction,
+        **echoed,
         patch_successfully_applied=True,
         resolved=resolution_status == ResolvedStatus.FULL.value,
         resolution_status=resolution_status,

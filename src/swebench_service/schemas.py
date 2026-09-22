@@ -7,6 +7,8 @@ class EvaluationResult(BaseModel):
     """Result from evaluating a SWE-bench task."""
 
     prediction: str | None = None
+    prediction_bytes: int | None = None
+    prediction_truncated: bool = False
     patch_successfully_applied: bool
     resolved: bool
     resolution_status: str

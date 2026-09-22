@@ -188,9 +188,13 @@ Evaluates a solution in the sandbox:
   "pass_to_pass": {"success": [...], "failure": [...]},
   "f2p_score": 1.0,
   "p2p_score": 1.0,
-  "prediction": "diff --git ..."
+  "prediction": "diff --git ...",
+  "prediction_bytes": 1432,
+  "prediction_truncated": false
 }}
 ```
+
+`prediction` echoes the captured patch up to 1 MiB; a larger patch is cut there with `prediction_truncated: true`, and `prediction_bytes` is its full size. The complete patch is the persisted prediction artifact.
 
 ### Evaluate Response
 ```http
