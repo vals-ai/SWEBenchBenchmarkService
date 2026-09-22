@@ -1,8 +1,13 @@
-from collections.abc import Generator
+from collections.abc import Callable, Generator
+from typing import Any
 
 import pytest
 
-from swebench_service import load_dataset_from_disk, load_multimodal_dataset_from_disk
+from swebench_service import (
+    load_dataset_from_disk,
+    load_multimodal_dataset_from_disk,
+    load_multimodal_dev_dataset_from_disk,
+)
 from tests.utils import BenchmarkServiceTestClient
 
 
@@ -236,10 +241,21 @@ class TestMultimodalEndpoints:
         c.close()
 
     async def test_verify_task_ids_all_multimodal(self, client: BenchmarkServiceTestClient) -> None:
-        """The multimodal dataset serves exactly the pinned dev split."""
+        """`multimodal` serves exactly the pinned test split and `multimodal_dev` the dev split."""
         response = await client.request_verify_task_ids(dataset="multimodal")
         assert response.status_code == 200
         assert response.json()["task_ids"] == list(load_multimodal_dataset_from_disk().keys())
+
+        response = await client.request_verify_task_ids(dataset="multimodal_dev")
+        assert response.status_code == 200
+        assert response.json()["task_ids"] == list(load_multimodal_dev_dataset_from_disk().keys())
+
+    async def test_multimodal_splits_are_disjoint(self, client: BenchmarkServiceTestClient) -> None:
+        """A dev instance is not a member of the test-split dataset, and vice versa."""
+        dev_id = next(iter(load_multimodal_dev_dataset_from_disk()))
+        test_id = next(iter(load_multimodal_dataset_from_disk()))
+        assert (await client.request_verify_task_ids([dev_id], dataset="multimodal")).status_code == 400
+        assert (await client.request_verify_task_ids([test_id], dataset="multimodal_dev")).status_code == 400
 
     async def test_verify_task_ids_multimodal_rejects_verified_id(self, client: BenchmarkServiceTestClient) -> None:
         """A Verified instance is not a member of the multimodal dataset."""
@@ -252,12 +268,17 @@ class TestMultimodalEndpoints:
         response = await client.request_verify_task_ids([task_id])
         assert response.status_code == 400
 
-    async def test_retrieve_task_multimodal(self, client: BenchmarkServiceTestClient) -> None:
-        """Multimodal tasks use the published evaluation image and the larger sandbox."""
-        dataset = load_multimodal_dataset_from_disk()
-        task_id, task = next(iter(dataset.items()))
+    @pytest.mark.parametrize(
+        ("dataset", "loader"),
+        [("multimodal", load_multimodal_dataset_from_disk), ("multimodal_dev", load_multimodal_dev_dataset_from_disk)],
+    )
+    async def test_retrieve_task_multimodal(
+        self, client: BenchmarkServiceTestClient, dataset: str, loader: Callable[[], dict[str, dict[str, Any]]]
+    ) -> None:
+        """Multimodal tasks use the row's published evaluation image and the larger sandbox."""
+        task_id, task = next(iter(loader().items()))
 
-        response = await client.request_retrieve_task(task_id, dataset="multimodal")
+        response = await client.request_retrieve_task(task_id, dataset=dataset)
         assert response.status_code == 200
         data = response.json()
 

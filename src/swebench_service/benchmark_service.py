@@ -10,7 +10,7 @@ from base64 import b64decode
 from binascii import Error as Base64Error
 from collections.abc import AsyncGenerator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from benchmark_service import BenchmarkService
@@ -32,20 +32,28 @@ from benchmark_service.schemas import (
     StreamMessageChunk,
     StreamResultChunk,
 )
-from swebench.harness.test_spec.test_spec import make_test_spec
+import httpx
 
 from swebench_service import (
     DISK_PATH,
     EVAL_OUTPUT_PATH,
+    MULTIMODAL_DEV_DISK_PATH,
     MULTIMODAL_DISK_PATH,
+    asset_restore_commands,
+    asset_sandbox_path,
     create_evaluation_script,
     create_run_command,
     get_pre_install_commands,
     grade_test_output,
     load_dataset_from_disk,
     load_multimodal_dataset_from_disk,
+    load_multimodal_dev_dataset_from_disk,
     load_vals_index_subset,
+    make_test_spec,
+    task_row_summary,
+    test_patch_assets,
 )
+from swebench_service.test_spec import TestSpec
 from swebench_service.eval_resume import MAX_PREDICTION_BYTES, EvalResumeState, load_prediction, persist_prediction
 from swebench_service.utils import with_retry
 
@@ -71,10 +79,14 @@ IMAGE_DIGEST_OVERRIDES = {
     "scikit-learn__scikit-learn-12585": "sha256:438346134907344bb2444ac8f0764ffa90384cf9a4bcfc2b4b398ed95847308e",
 }
 MULTIMODAL_DATASET = "multimodal"
-# The Multimodal repositories run heavier suites than the Python ones: Chart.js drives
-# headless Chrome under Xvfb, p5.js drives Puppeteer, and wp-calypso runs Jest over a
-# monorepo. They get the allocation the large Verified tasks already use.
+MULTIMODAL_DEV_DATASET = "multimodal_dev"
+MULTIMODAL_DATASETS = frozenset({MULTIMODAL_DATASET, MULTIMODAL_DEV_DATASET})
+# The Multimodal repositories run heavier suites than the Python ones: browser suites under
+# Xvfb (Chart.js, openlayers, lighthouse), Puppeteer, and Jest over monorepos. They get the
+# allocation the large Verified tasks already use.
 MULTIMODAL_RESOURCES = Resources(vcpu=4, memory=8, disk=10)
+# Binary test assets (rendering baselines) are fetched from the dataset's URLs at grading time.
+ASSET_FETCH_TIMEOUT_SECONDS = 60.0
 _AGENT_BASELINE_TRAP = f"""
 _record_agent_baseline() {{
     setup_status=$?
@@ -250,8 +262,8 @@ class SWEBenchService(BenchmarkService):
                     await stream_task
 
     async def load_datasets(self) -> dict[str, dict[str, Any]]:
-        """Load the SWE-bench_Verified and SWE-bench Multimodal (dev) datasets from disk."""
-        for disk_path in (DISK_PATH, MULTIMODAL_DISK_PATH):
+        """Load SWE-bench_Verified and both SWE-bench Multimodal splits from disk."""
+        for disk_path in (DISK_PATH, MULTIMODAL_DISK_PATH, MULTIMODAL_DEV_DISK_PATH):
             if not disk_path.exists():
                 raise FileNotFoundError(f"Dataset not found at {disk_path}. Run 'make setup' first.")
 
@@ -259,6 +271,7 @@ class SWEBenchService(BenchmarkService):
             "default": load_dataset_from_disk(),
             "vals_index": load_vals_index_subset(),
             MULTIMODAL_DATASET: load_multimodal_dataset_from_disk(),
+            MULTIMODAL_DEV_DATASET: load_multimodal_dev_dataset_from_disk(),
         }
 
     async def retrieve_task(
@@ -268,12 +281,14 @@ class SWEBenchService(BenchmarkService):
         if not skip_validation:
             await self.validate_task_ids([task_id], dataset=dataset)
 
-        # Image names are lowercase, as the harness builds them; Multimodal ids such as
-        # Automattic__wp-calypso-21409 are not.
+        # The dataset row names its evaluation image (lowercase, as the harness builds them);
+        # the constructed name is the fallback for rows that predate that column.
+        task = self.get_dataset(dataset)[task_id]
         id_docker_compatible = task_id.replace("__", "_1776_").lower()
-        image_repository = f"swebench/sweb.eval.x86_64.{id_docker_compatible}"
+        image_reference: str = cast(str, task.get("image")) or f"swebench/sweb.eval.x86_64.{id_docker_compatible}:latest"
+        image_repository: str = image_reference.split("@", 1)[0].rsplit(":", 1)[0]
         image_digest = IMAGE_DIGEST_OVERRIDES.get(task_id)
-        docker_image = f"{image_repository}@{image_digest}" if image_digest else f"{image_repository}:latest"
+        docker_image = f"{image_repository}@{image_digest}" if image_digest else image_reference
 
         # Default: 2 vCPU, 4GB memory
         resources = Resources(vcpu=2, memory=4, disk=10)
@@ -282,7 +297,7 @@ class SWEBenchService(BenchmarkService):
         if task_id in ["scikit-learn__scikit-learn-14710", "psf__requests-2317"]:
             resources.vcpu = 4
             resources.memory = 8
-        if (dataset or "default") == MULTIMODAL_DATASET:
+        if (dataset or "default") in MULTIMODAL_DATASETS:
             resources = MULTIMODAL_RESOURCES.model_copy()
 
         return RetrieveTaskResponse(
@@ -302,7 +317,7 @@ class SWEBenchService(BenchmarkService):
         task = self.get_dataset(dataset)[task_id]
         service_dir = Path(__file__).parent
         payload = {
-            "version": 1,
+            "version": 2,
             "task_id": task_id,
             "dataset": dataset or "default",
             "image": task_data.source.model_dump(mode="json"),
@@ -315,6 +330,7 @@ class SWEBenchService(BenchmarkService):
                 "test_patch": task.get("test_patch"),
                 "fail_to_pass": task.get("FAIL_TO_PASS"),
                 "pass_to_pass": task.get("PASS_TO_PASS"),
+                **task_row_summary(task),
                 "benchmark_service_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 "evaluation_sha256": hashlib.sha256((service_dir / "evaluation.py").read_bytes()).hexdigest(),
                 "test_spec_sha256": hashlib.sha256((service_dir / "test_spec.py").read_bytes()).hexdigest(),
@@ -492,6 +508,33 @@ class SWEBenchService(BenchmarkService):
             except Exception:
                 logger.exception("Failed to remove SWE-bench prediction capture %s", capture_path)
 
+    async def _stage_image_assets(self, sandbox: Sandbox, test_spec: TestSpec) -> list[str]:
+        """Upload the binary assets the test patch needs and return the lines that restore them.
+
+        A text patch cannot carry files such as expected.png rendering baselines, so the
+        dataset lists them with a source URL. They are fetched here and copied into the
+        working tree only after the eval script's `git apply`, so test data is never baked
+        into the task image. An asset that cannot be fetched fails the evaluation: grading
+        without it would score the model zero for an infrastructure fault.
+        """
+        assets = test_patch_assets(test_spec)
+        if not assets:
+            return []
+        async with httpx.AsyncClient(timeout=ASSET_FETCH_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            for asset in assets:
+                if not asset["url"]:
+                    raise RuntimeError(f"Test asset {asset['path']} for {test_spec.instance_id} has no source URL")
+                try:
+                    response = await client.get(asset["url"])
+                    response.raise_for_status()
+                except httpx.HTTPError as exc:
+                    raise RuntimeError(
+                        f"Could not fetch test asset {asset['path']} for {test_spec.instance_id}: {exc}"
+                    ) from exc
+                data = response.content
+                await with_retry(sandbox, lambda: sandbox.upload_file(asset_sandbox_path(asset["path"]), data))
+        return asset_restore_commands(assets)
+
     async def _evaluate_prediction(
         self,
         task_id: str,
@@ -502,9 +545,13 @@ class SWEBenchService(BenchmarkService):
         """Run the existing atomic SWE-bench evaluator for one captured patch."""
         task = self.get_dataset(dataset)[task_id]
 
-        # Create and upload evaluation script
+        # Create and upload evaluation script, with the patch's binary assets staged so the
+        # script can copy them into place after its own `git apply`.
         test_spec = make_test_spec(task)
-        eval_script = create_evaluation_script(test_spec, task_id)
+        restore_commands = await self._stage_image_assets(sandbox, test_spec)
+        if restore_commands:
+            yield StreamMessageChunk(type="message", data=f"Staged {len(restore_commands)} test asset(s)")
+        eval_script = create_evaluation_script(test_spec, task_id, restore_commands)
         await with_retry(sandbox, lambda: sandbox.upload_file("/root/eval.sh", eval_script.encode()))
         yield StreamMessageChunk(type="message", data="Uploaded evaluation script")
 

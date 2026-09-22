@@ -171,7 +171,7 @@ async def test_evaluate_instance_excludes_watchdog_messages_from_grading(monkeyp
     def make_test_spec(task: object) -> object:
         return test_spec
 
-    def create_evaluation_script(spec: object, task_id: str) -> str:
+    def create_evaluation_script(spec: object, task_id: str, restore_commands: list[str] | None = None) -> str:
         return ""
 
     monkeypatch.setattr("swebench_service.benchmark_service.make_test_spec", make_test_spec)
@@ -227,7 +227,7 @@ async def test_evaluate_instance_grades_captured_log_file(monkeypatch: pytest.Mo
     def make_test_spec(task: object) -> object:
         return test_spec
 
-    def create_evaluation_script(spec: object, task_id: str) -> str:
+    def create_evaluation_script(spec: object, task_id: str, restore_commands: list[str] | None = None) -> str:
         return ""
 
     monkeypatch.setattr("swebench_service.benchmark_service.make_test_spec", make_test_spec)
