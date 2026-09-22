@@ -4,7 +4,9 @@ A FastAPI-based service for evaluating software engineering agents on the SWE-be
 
 ## Overview
 
-SWE-bench is a benchmark for evaluating AI agents on real-world software engineering tasks. This service serves two datasets: **SWE-bench_Verified**, 500 carefully verified GitHub issues from popular Python repositories, and the **SWE-bench Multimodal** dev split, 100 issues from JavaScript repositories whose descriptions include screenshots.
+SWE-bench is a benchmark for evaluating AI agents on real-world software engineering tasks. This service serves **SWE-bench_Verified**, 500 carefully verified GitHub issues from popular Python repositories, and **SWE-bench Multimodal**, issues from JavaScript repositories whose descriptions include screenshots (the 480-task test split, plus the 100-task dev split for smokes).
+
+Grading is dataset-driven: every served row carries its own `eval_script`, `log_parser`, `eval_type`, and `image`, which is how the pinned `swebench` harness (5.x) grades every SWE-bench dataset. Each dataset is pinned to a HuggingFace revision.
 
 Each task requires:
 1. Understanding a GitHub issue description
@@ -34,7 +36,7 @@ Each task requires:
    make setup
    ```
 
-   This downloads the 500 Verified instances to `/tmp/swe-bench-verified/` (approximately 100MB) and the 100 Multimodal dev instances to `/tmp/swe-bench-multimodal/`.
+   This downloads the 500 Verified instances to `/tmp/swe-bench-verified/`, the 480 Multimodal test instances to `/tmp/swe-bench-multimodal/`, and the 100 Multimodal dev instances to `/tmp/swe-bench-multimodal-dev/`.
 
 3. **Run the development server:**
    ```bash
@@ -59,7 +61,7 @@ The datasets are downloaded during the Docker build process, so no separate setu
 ### SWE-bench_Verified (`default`)
 
 - **Name:** SWE-bench_Verified
-- **Source:** `princeton-nlp/SWE-bench_Verified` (HuggingFace)
+- **Source:** `SWE-bench/SWE-bench_Verified` (HuggingFace), pinned to revision `78f471bf655a3137b2e8a75af1501690ec009ec3`. The same 500 instances, commits, and patches as `princeton-nlp/SWE-bench_Verified`, plus the grading columns the harness now reads; two instances (`astropy__astropy-7606`, `django__django-10097`) lost a few PASS_TO_PASS tests upstream between the two copies.
 - **Size:** 500 verified instances
 - **Cache Location:** `/tmp/swe-bench-verified/`
 - **Repositories:** Django, Flask, Matplotlib, Pandas, Pytest, Requests, Scikit-learn, Sphinx, SymPy, and more
@@ -75,16 +77,17 @@ Each instance contains:
 ### Vals Index Subset (`vals_index`)
 The Vals Index subset can be fetched by passing in `dataset=vals_index` in the [/verify-task-ids](#verify-task-ids) endpoint
 
-### SWE-bench Multimodal, dev split (`multimodal`)
+### SWE-bench Multimodal (`multimodal`, `multimodal_dev`)
 
-- **Source:** `SWE-bench/SWE-bench_Multimodal` (HuggingFace), `dev` split, pinned to revision `4e6662d51c48e475f7f346e4fa09a6f8b31fcaa5`
-- **Size:** 100 instances
-- **Cache Location:** `/tmp/swe-bench-multimodal/`
-- **Repositories:** Automattic/wp-calypso (37), chartjs/Chart.js (22), processing/p5.js (16), markedjs/marked (14), diegomura/react-pdf (11)
+- **Source:** `SWE-bench/SWE-bench_Multimodal` (HuggingFace), pinned to revision `4e6662d51c48e475f7f346e4fa09a6f8b31fcaa5`
+- **`multimodal`:** the `test` split, 480 instances from 11 repositories (carbon 133, openlayers 77, lighthouse 54, bpmn-js 53, highlight.js 39, prism 38, next 36, grommet 20, prettier 13, eslint 11, scratch-gui 6), cached at `/tmp/swe-bench-multimodal/`. This is the split the public leaderboard reports.
+- **`multimodal_dev`:** the `dev` split, 100 instances from 5 repositories (wp-calypso 37, Chart.js 22, p5.js 16, marked 14, react-pdf 11), cached at `/tmp/swe-bench-multimodal-dev/`. Kept for smokes and parity checks.
 
-Request it with `dataset=multimodal`. Instances carry the same fields as Verified plus `image_assets`, a JSON map of the image URLs found in the `problem_statement`, `patch`, and `test_patch`. The problem statement is served verbatim, so the screenshots appear as GitHub markdown or HTML image links; an agent that wants to see them fetches those URLs itself. The 11 instances whose tests reference images have the downloads baked into the evaluation script by the harness.
+Instances carry the same fields as Verified plus `image_assets`, a map of the image URLs found in the `problem_statement`, `patch`, and `test_patch`. The problem statement is served verbatim, so the screenshots appear as GitHub markdown or HTML image links; an agent that wants to see them fetches those URLs itself.
 
-The revision is pinned because the upstream split has been reshaped in place before. Only the dev split is served: the test split is graded exclusively by the hosted SWE-bench evaluation service, since the `swebench` harness has no specs or log parsers for its twelve repositories and no evaluation images are published for them.
+Binary test assets (rendering baselines such as `expected.png`, which a text patch cannot carry) are listed under `image_assets.test_patch` with a source URL. At grading time the service fetches each one, uploads it to `/image_assets/` in the sandbox, and inserts restore commands into the evaluation script just before the test-output marker, so the files land after the script's own `git apply` and never live in the task image. Only https URLs on `raw.githubusercontent.com` (the host every pinned asset uses) are fetched, redirects are refused, and bodies over 20 MB are rejected. An asset that cannot be fetched fails the evaluation rather than scoring the model zero.
+
+The revision is pinned because the upstream split has been reshaped in place before.
 
 ## Docker Images
 
@@ -109,7 +112,7 @@ These images are hosted on [Docker Hub](https://hub.docker.com/u/swebench) and c
 **Large tasks** (require more resources):
 - `scikit-learn__scikit-learn-14710`
 - `psf__requests-2317`
-- every `multimodal` task: Chart.js runs headless Chrome under Xvfb, p5.js drives Puppeteer, and wp-calypso runs Jest over a monorepo
+- every `multimodal` and `multimodal_dev` task: browser suites under Xvfb (Chart.js, openlayers, lighthouse), Puppeteer, and Jest over monorepos
 
 These receive 4 vCPU and 8 GB memory.
 
@@ -269,7 +272,7 @@ export DAYTONA_API_URL="your-url"
 export DAYTONA_TARGET="your-target"
 make test
 
-# Run experimental tests (slow, tests all 600 images)
+# Run experimental tests (slow, tests all 1,080 images)
 make test-experimental
 ```
 

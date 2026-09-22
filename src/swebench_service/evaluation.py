@@ -9,7 +9,6 @@ import unicodedata
 from swebench.harness.constants import (
     APPLY_PATCH_FAIL,
     END_TEST_OUTPUT,
-    FAIL_ONLY_REPOS,
     FAIL_TO_PASS,
     PASS_TO_PASS,
     RESET_FAILED,
@@ -18,15 +17,18 @@ from swebench.harness.constants import (
     TESTS_TIMEOUT,
     EvalType,
     ResolvedStatus,
+    TestStatus,
 )
 from swebench.harness.grading import (
-    TestSpec,
+    PARSER_REGISTRY,
+    SUITE_RAN,
     compute_fail_to_pass,
     compute_pass_to_pass,
     get_eval_tests_report,
     get_resolution_status,
+    parse_test_exit_code,
 )
-from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
+from swebench.harness.utils import TestSpec
 
 from swebench_service.schemas import EvaluationResult
 
@@ -34,6 +36,9 @@ from swebench_service.schemas import EvaluationResult
 def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | None) -> EvaluationResult:
     """
     Grade test output in memory using SWE-bench's logic.
+
+    The parser and the eval type come from the dataset row (`log_parser`, `eval_type`),
+    which is how the harness grades every SWE-bench dataset since 5.0.
 
     Args:
         test_output: The output from running tests
@@ -68,8 +73,8 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
             prediction=prediction,
         )
 
-    # Get log parser for this repo
-    log_parser = MAP_REPO_TO_PARSER[test_spec.repo]
+    # Get log parser for this task
+    log_parser = PARSER_REGISTRY[test_spec.log_parser]
 
     # Extract content between markers
     test_content = test_output.split(START_TEST_OUTPUT)[1].split(END_TEST_OUTPUT)[0]
@@ -89,6 +94,31 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
     if not status_map:
         status_map = log_parser(test_output, test_spec)
 
+    # No parsed results and no sign the suite ran: the run is invalid, not a pass. Under
+    # EvalType.FAIL_ONLY an absent test counts as success, so without this a suite that
+    # never started would grade as resolved.
+    if not status_map and not SUITE_RAN.search(test_output):
+        return EvaluationResult(
+            patch_successfully_applied=False,
+            resolved=False,
+            resolution_status="NO",
+            prediction=prediction,
+        )
+
+    # A patch can print its own "PASSED" lines (from a conftest.py hook, say), so
+    # cross-check the log against the test command's exit status, which the eval script
+    # records after the end marker. Exiting non-zero while reporting no failure at all
+    # means the log is not describing the run that actually happened.
+    exit_code = parse_test_exit_code(test_output)
+    reported_failure = any(status in (TestStatus.FAILED.value, TestStatus.ERROR.value) for status in status_map.values())
+    if exit_code not in (None, 0) and status_map and not reported_failure:
+        return EvaluationResult(
+            patch_successfully_applied=False,
+            resolved=False,
+            resolution_status="NO",
+            prediction=prediction,
+        )
+
     # BUG: Remove all unicode characters that are control characters
     status_map = {"".join(c for c in k if unicodedata.category(c)[0] != "C"): v for k, v in status_map.items()}
 
@@ -100,8 +130,7 @@ def grade_test_output(test_output: str, test_spec: TestSpec, prediction: str | N
         PASS_TO_PASS: test_spec.PASS_TO_PASS,
     }
 
-    # Determine eval type
-    eval_type = EvalType.FAIL_ONLY if test_spec.repo in FAIL_ONLY_REPOS else EvalType.PASS_AND_FAIL
+    eval_type = EvalType(test_spec.eval_type)
 
     # Generate report
     report = get_eval_tests_report(status_map, eval_ref, eval_type=eval_type)  # type: ignore

@@ -1,10 +1,18 @@
 import asyncio
+import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import Any
 
 import pytest
 
-from swebench_service import load_dataset_from_disk, load_multimodal_dataset_from_disk
+from swebench_service import (
+    load_dataset_from_disk,
+    load_multimodal_dataset_from_disk,
+    load_multimodal_dev_dataset_from_disk,
+    make_test_spec,
+    test_patch_assets as patch_assets,
+)
 
 
 class TestRegistry:
@@ -84,52 +92,74 @@ class TestRegistry:
         assert len(failed) == 0, f"Failed images: {failed[:10]}"
 
 
-class TestMultimodalRegistry:
-    """The pinned SWE-bench Multimodal dev split must be fully gradable by the pinned harness."""
+MULTIMODAL_DATASETS: dict[str, tuple[Callable[[], dict[str, Any]], int, int]] = {
+    # dataset -> (loader, instance count, repository count)
+    "multimodal": (load_multimodal_dataset_from_disk, 480, 11),
+    "multimodal_dev": (load_multimodal_dev_dataset_from_disk, 100, 5),
+}
+GRADED_DATASETS: dict[str, Callable[[], dict[str, Any]]] = {
+    "default": load_dataset_from_disk,
+    **{name: loader for name, (loader, _, _) in MULTIMODAL_DATASETS.items()},
+}
 
-    def test_every_repo_version_has_harness_specs_and_a_log_parser(self) -> None:
-        from swebench.harness.constants import MAP_REPO_VERSION_TO_SPECS
-        from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
 
-        dataset_map = load_multimodal_dataset_from_disk()
-        assert len(dataset_map) == 100, f"Expected 100 tasks, got {len(dataset_map)}"
+class TestGradingMetadata:
+    """Every served row must be gradable by the pinned harness from its own columns."""
 
-        missing_specs = sorted(
-            {
-                (task["repo"], task["version"])
-                for task in dataset_map.values()
-                if task["version"] not in MAP_REPO_VERSION_TO_SPECS.get(task["repo"], {})  # type: ignore[reportUnknownMemberType]
-            }
-        )
-        assert missing_specs == [], f"Repo versions without harness specs: {missing_specs}"
+    @pytest.mark.parametrize("dataset", sorted(GRADED_DATASETS))
+    def test_every_row_names_a_registered_log_parser(self, dataset: str) -> None:
+        from swebench.harness.grading import PARSER_REGISTRY
 
-        missing_parsers = sorted({task["repo"] for task in dataset_map.values() if task["repo"] not in MAP_REPO_TO_PARSER})
-        assert missing_parsers == [], f"Repos without a log parser: {missing_parsers}"
+        rows = GRADED_DATASETS[dataset]()
+        unknown = sorted({task["log_parser"] for task in rows.values() if task["log_parser"] not in PARSER_REGISTRY})
+        assert unknown == [], f"{dataset}: log parsers missing from the harness: {unknown}"
 
-    def test_every_task_builds_an_evaluation_script(self) -> None:
-        from swebench.harness.constants import SWEbenchInstance
-        from swebench.harness.test_spec.test_spec import make_test_spec
+    @pytest.mark.parametrize("dataset", sorted(GRADED_DATASETS))
+    def test_every_row_builds_a_test_spec(self, dataset: str) -> None:
+        from swebench.harness.constants import EvalType
 
-        for task_id, task in load_multimodal_dataset_from_disk().items():
-            test_spec = make_test_spec(cast(SWEbenchInstance, task))
+        for task_id, task in GRADED_DATASETS[dataset]().items():
+            test_spec = make_test_spec(task)
             assert test_spec.eval_script, f"Empty eval script for {task_id}"
             assert test_spec.FAIL_TO_PASS, f"No FAIL_TO_PASS tests for {task_id}"
+            assert EvalType(test_spec.eval_type)
+            assert test_spec.image == task["image"]
 
-    def test_required_fields_exist(self) -> None:
-        dataset_map = load_multimodal_dataset_from_disk()
+    @pytest.mark.parametrize("dataset", sorted(GRADED_DATASETS))
+    def test_image_column_matches_the_harness_naming(self, dataset: str) -> None:
+        """The row's image is the name the harness builds; the service's fallback must agree."""
+        mismatched = [
+            task_id
+            for task_id, task in GRADED_DATASETS[dataset]().items()
+            if task["image"] != f"swebench/sweb.eval.x86_64.{task_id.replace('__', '_1776_').lower()}:latest"
+        ]
+        assert mismatched == [], f"{dataset}: {mismatched[:10]}"
 
-        for field in ("problem_statement", "base_commit", "patch", "repo", "version", "image"):
-            missing = [task_id for task_id, task in dataset_map.items() if not task.get(field)]
+
+class TestMultimodalRegistry:
+    """The pinned SWE-bench Multimodal splits, by the numbers."""
+
+    @pytest.mark.parametrize("dataset", sorted(MULTIMODAL_DATASETS))
+    def test_split_sizes(self, dataset: str) -> None:
+        loader, count, repos = MULTIMODAL_DATASETS[dataset]
+        rows = loader()
+        assert len(rows) == count, f"Expected {count} tasks, got {len(rows)}"
+        assert len({task["repo"] for task in rows.values()}) == repos
+
+    @pytest.mark.parametrize("dataset", sorted(MULTIMODAL_DATASETS))
+    def test_required_fields_exist(self, dataset: str) -> None:
+        rows = MULTIMODAL_DATASETS[dataset][0]()
+        for field in ("problem_statement", "base_commit", "patch", "repo", "version", "image", "eval_script", "log_parser"):
+            missing = [task_id for task_id, task in rows.items() if not task.get(field)]
             assert missing == [], f"Missing {field}: {missing[:10]}"
 
-    def test_image_assets_reference_the_problem_statement(self) -> None:
+    @pytest.mark.parametrize("dataset", sorted(MULTIMODAL_DATASETS))
+    def test_image_assets_reference_the_problem_statement(self, dataset: str) -> None:
         """Every task ships an image_assets map whose problem_statement URLs appear in the text."""
-        import json
-
-        dataset_map = load_multimodal_dataset_from_disk()
+        rows = MULTIMODAL_DATASETS[dataset][0]()
 
         with_images = 0
-        for task_id, task in dataset_map.items():
+        for task_id, task in rows.items():
             image_assets = task["image_assets"]
             if isinstance(image_assets, str):
                 image_assets = json.loads(image_assets)
@@ -139,21 +169,33 @@ class TestMultimodalRegistry:
             for url in urls:
                 assert url in task["problem_statement"], f"{task_id}: {url} not in problem statement"
 
-        assert with_images > 90, f"Only {with_images} of {len(dataset_map)} tasks carry images"
+        assert with_images / len(rows) > 0.9, f"Only {with_images} of {len(rows)} tasks carry images"
+
+    def test_test_patch_assets_carry_a_path_and_a_source_url(self) -> None:
+        """Binary test assets must name where they land and where to fetch them; the service refuses otherwise."""
+        rows = load_multimodal_dataset_from_disk()
+        with_assets = 0
+        for task in rows.values():
+            assets = patch_assets(make_test_spec(task))
+            with_assets += bool(assets)
+            for asset in assets:
+                assert asset["path"] and asset["url"].startswith("https://"), (task["instance_id"], asset)
+        assert with_assets == 54
 
     @pytest.mark.experimental
-    async def test_images_exist_on_docker_hub(self) -> None:
-        """Every multimodal evaluation image is published under the name the service constructs (SLOW, network)."""
+    @pytest.mark.parametrize("dataset", sorted(MULTIMODAL_DATASETS))
+    async def test_images_exist_on_docker_hub(self, dataset: str) -> None:
+        """Every multimodal evaluation image is published under the name the service serves (SLOW, network)."""
         import httpx
 
         from swebench_service.benchmark_service import SWEBenchService
 
         service = await SWEBenchService.create()
-        task_ids = list(service.get_dataset("multimodal").keys())
+        task_ids = list(service.get_dataset(dataset).keys())
         semaphore = asyncio.Semaphore(8)
 
         async def check_image(client: httpx.AsyncClient, task_id: str) -> tuple[str, bool]:
-            response = await service.retrieve_task(task_id, skip_validation=True, dataset="multimodal")
+            response = await service.retrieve_task(task_id, skip_validation=True, dataset=dataset)
             repository, _, tag = response.docker_image.partition(":")
             async with semaphore:
                 probe = await client.get(f"https://hub.docker.com/v2/repositories/{repository}/tags/{tag}")

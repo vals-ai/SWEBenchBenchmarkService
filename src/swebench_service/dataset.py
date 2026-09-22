@@ -6,19 +6,27 @@ from typing import Any
 
 from datasets import load_dataset, load_from_disk  # type: ignore
 
+# Every dataset is served from the SWE-bench organisation's HuggingFace copies, which carry
+# the per-instance evaluation script, log parser name, eval type, and image that the
+# harness (swebench >= 5) grades from. Each is pinned to a revision: upstream reshapes
+# splits in place, and a benchmark's task set must not move under its published scores.
+
+# SWE-bench_Verified: the same 500 instances as princeton-nlp/SWE-bench_Verified, with the
+# grading columns added. Two instances (astropy__astropy-7606, django__django-10097) lost a
+# handful of PASS_TO_PASS tests upstream between the two copies.
+VERIFIED_DATASET_NAME = "SWE-bench/SWE-bench_Verified"
+VERIFIED_REVISION = "78f471bf655a3137b2e8a75af1501690ec009ec3"
 DISK_PATH: Path = Path("/tmp/swe-bench-verified")
 VALS_INDEX_PATH: Path = Path(__file__).parent / "vals_index.json"
 
-# SWE-bench Multimodal, dev split: issue/PR pairs from five JavaScript repositories whose
-# problem statements carry screenshots. Only the dev split is served. The test split is
-# graded exclusively by the hosted SWE-bench evaluation service: the swebench harness has no
-# specs or log parsers for its twelve repositories and no evaluation images are published.
-# The revision is pinned because the upstream split has been reshaped in place before, and
-# a benchmark's task set must not change underneath its published scores.
-MULTIMODAL_DISK_PATH: Path = Path("/tmp/swe-bench-multimodal")
+# SWE-bench Multimodal: issue/PR pairs from JavaScript repositories whose problem statements
+# carry screenshots. `multimodal` is the test split (480 instances, 11 repositories), the
+# split the public leaderboard reports. `multimodal_dev` is the dev split (100 instances,
+# 5 repositories), kept for smokes and parity checks.
 MULTIMODAL_DATASET_NAME = "SWE-bench/SWE-bench_Multimodal"
-MULTIMODAL_SPLIT = "dev"
 MULTIMODAL_REVISION = "4e6662d51c48e475f7f346e4fa09a6f8b31fcaa5"
+MULTIMODAL_DISK_PATH: Path = Path("/tmp/swe-bench-multimodal")
+MULTIMODAL_DEV_DISK_PATH: Path = Path("/tmp/swe-bench-multimodal-dev")
 
 # One in-memory copy per dataset, reloaded when its disk path changes (the tests point every
 # run at a fresh directory), so the cache never holds more than the datasets being served.
@@ -55,12 +63,17 @@ def load_vals_index_subset() -> dict[str, dict[str, Any]]:
 
 
 def load_multimodal_dataset_from_disk() -> dict[str, dict[str, Any]]:
-    """Load the SWE-bench Multimodal dev split from disk and return a mapping of instance_id to row data."""
+    """Load the SWE-bench Multimodal test split from disk and return a mapping of instance_id to row data."""
     return _load_from_disk("multimodal", MULTIMODAL_DISK_PATH)
 
 
-def _download(name: str, *, split: str, disk_path: Path, revision: str | None = None) -> None:
-    print(f"Downloading {name} ({split}) to {disk_path}...")
+def load_multimodal_dev_dataset_from_disk() -> dict[str, dict[str, Any]]:
+    """Load the SWE-bench Multimodal dev split from disk and return a mapping of instance_id to row data."""
+    return _load_from_disk("multimodal_dev", MULTIMODAL_DEV_DISK_PATH)
+
+
+def _download(name: str, *, split: str, disk_path: Path, revision: str) -> None:
+    print(f"Downloading {name} ({split} @ {revision[:8]}) to {disk_path}...")
     disk_path.parent.mkdir(parents=True, exist_ok=True)
 
     dataset = load_dataset(name, split=split, revision=revision)
@@ -76,13 +89,9 @@ def setup_dataset() -> None:
 
     This should be run once during setup to cache the datasets locally.
     """
-    _download("princeton-nlp/SWE-bench_Verified", split="test", disk_path=DISK_PATH)
-    _download(
-        MULTIMODAL_DATASET_NAME,
-        split=MULTIMODAL_SPLIT,
-        disk_path=MULTIMODAL_DISK_PATH,
-        revision=MULTIMODAL_REVISION,
-    )
+    _download(VERIFIED_DATASET_NAME, split="test", disk_path=DISK_PATH, revision=VERIFIED_REVISION)
+    _download(MULTIMODAL_DATASET_NAME, split="test", disk_path=MULTIMODAL_DISK_PATH, revision=MULTIMODAL_REVISION)
+    _download(MULTIMODAL_DATASET_NAME, split="dev", disk_path=MULTIMODAL_DEV_DISK_PATH, revision=MULTIMODAL_REVISION)
 
 
 if __name__ == "__main__":

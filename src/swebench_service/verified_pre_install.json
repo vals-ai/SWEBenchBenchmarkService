@@ -1,0 +1,217 @@
+{
+  "astropy/astropy": {
+    "4.3": [
+      "sed -i 's/requires = \\[\"setuptools\",/requires = \\[\"setuptools==68.0.0\",/' pyproject.toml"
+    ],
+    "5.0": [
+      "sed -i 's/requires = \\[\"setuptools\",/requires = \\[\"setuptools==68.0.0\",/' pyproject.toml"
+    ],
+    "5.1": [
+      "sed -i 's/requires = \\[\"setuptools\",/requires = \\[\"setuptools==68.0.0\",/' pyproject.toml"
+    ],
+    "5.2": [
+      "sed -i 's/requires = \\[\"setuptools\",/requires = \\[\"setuptools==68.0.0\",/' pyproject.toml"
+    ]
+  },
+  "django/django": {
+    "1.11": [
+      "apt-get update && apt-get install -y locales",
+      "echo 'en_US UTF-8' > /etc/locale.gen",
+      "locale-gen en_US.UTF-8"
+    ],
+    "2.2": [
+      "apt-get update && apt-get install -y locales",
+      "echo 'en_US UTF-8' > /etc/locale.gen",
+      "locale-gen en_US.UTF-8"
+    ]
+  },
+  "matplotlib/matplotlib": {
+    "3.0": [
+      "apt-get -y update && apt-get -y upgrade && apt-get install -y imagemagick ffmpeg libfreetype6-dev pkg-config",
+      "QHULL_URL=\"http://www.qhull.org/download/qhull-2020-src-8.0.2.tgz\"",
+      "QHULL_TAR=\"/tmp/qhull-2020-src-8.0.2.tgz\"",
+      "QHULL_BUILD_DIR=\"/testbed/build\"",
+      "wget -O \"$QHULL_TAR\" \"$QHULL_URL\"",
+      "mkdir -p \"$QHULL_BUILD_DIR\"",
+      "tar -xvzf \"$QHULL_TAR\" -C \"$QHULL_BUILD_DIR\""
+    ],
+    "3.1": [
+      "apt-get -y update && apt-get -y upgrade && DEBIAN_FRONTEND=noninteractive apt-get install -y imagemagick ffmpeg libfreetype6-dev pkg-config texlive texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex cm-super",
+      "QHULL_URL=\"http://www.qhull.org/download/qhull-2020-src-8.0.2.tgz\"",
+      "QHULL_TAR=\"/tmp/qhull-2020-src-8.0.2.tgz\"",
+      "QHULL_BUILD_DIR=\"/testbed/build\"",
+      "wget -O \"$QHULL_TAR\" \"$QHULL_URL\"",
+      "mkdir -p \"$QHULL_BUILD_DIR\"",
+      "tar -xvzf \"$QHULL_TAR\" -C \"$QHULL_BUILD_DIR\""
+    ],
+    "3.4": [
+      "apt-get -y update && apt-get -y upgrade && DEBIAN_FRONTEND=noninteractive apt-get install -y imagemagick ffmpeg libfreetype6-dev pkg-config texlive texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex cm-super",
+      "QHULL_URL=\"http://www.qhull.org/download/qhull-2020-src-8.0.2.tgz\"",
+      "QHULL_TAR=\"/tmp/qhull-2020-src-8.0.2.tgz\"",
+      "QHULL_BUILD_DIR=\"/testbed/build\"",
+      "wget -O \"$QHULL_TAR\" \"$QHULL_URL\"",
+      "mkdir -p \"$QHULL_BUILD_DIR\"",
+      "tar -xvzf \"$QHULL_TAR\" -C \"$QHULL_BUILD_DIR\""
+    ],
+    "3.5": [
+      "apt-get -y update && apt-get -y upgrade && DEBIAN_FRONTEND=noninteractive apt-get install -y imagemagick ffmpeg texlive texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex cm-super dvipng",
+      "QHULL_URL=\"http://www.qhull.org/download/qhull-2020-src-8.0.2.tgz\"",
+      "QHULL_TAR=\"/tmp/qhull-2020-src-8.0.2.tgz\"",
+      "QHULL_BUILD_DIR=\"/testbed/build\"",
+      "wget -O \"$QHULL_TAR\" \"$QHULL_URL\"",
+      "mkdir -p \"$QHULL_BUILD_DIR\"",
+      "tar -xvzf \"$QHULL_TAR\" -C \"$QHULL_BUILD_DIR\""
+    ],
+    "3.6": [
+      "apt-get -y update && apt-get -y upgrade && DEBIAN_FRONTEND=noninteractive apt-get install -y imagemagick ffmpeg texlive texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex cm-super dvipng",
+      "QHULL_URL=\"http://www.qhull.org/download/qhull-2020-src-8.0.2.tgz\"",
+      "QHULL_TAR=\"/tmp/qhull-2020-src-8.0.2.tgz\"",
+      "QHULL_BUILD_DIR=\"/testbed/build\"",
+      "wget -O \"$QHULL_TAR\" \"$QHULL_URL\"",
+      "mkdir -p \"$QHULL_BUILD_DIR\"",
+      "tar -xvzf \"$QHULL_TAR\" -C \"$QHULL_BUILD_DIR\""
+    ],
+    "3.7": [
+      "apt-get -y update && apt-get -y upgrade && DEBIAN_FRONTEND=noninteractive apt-get install -y imagemagick ffmpeg texlive texlive-latex-extra texlive-fonts-recommended texlive-xetex texlive-luatex cm-super dvipng",
+      "QHULL_URL=\"http://www.qhull.org/download/qhull-2020-src-8.0.2.tgz\"",
+      "QHULL_TAR=\"/tmp/qhull-2020-src-8.0.2.tgz\"",
+      "QHULL_BUILD_DIR=\"/testbed/build\"",
+      "wget -O \"$QHULL_TAR\" \"$QHULL_URL\"",
+      "mkdir -p \"$QHULL_BUILD_DIR\"",
+      "tar -xvzf \"$QHULL_TAR\" -C \"$QHULL_BUILD_DIR\""
+    ]
+  },
+  "pytest-dev/pytest": {
+    "6.3": [
+      "sed -i 's/>=>=/>=/' setup.cfg"
+    ]
+  },
+  "sphinx-doc/sphinx": {
+    "3.0": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini",
+      "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+      "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+      "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+      "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+      "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+      "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+      "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+      "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+    ],
+    "3.1": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini",
+      "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+      "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+      "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+      "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+      "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+      "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+      "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+      "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+    ],
+    "3.2": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini",
+      "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+      "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+      "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+      "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+      "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+      "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+      "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+      "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+    ],
+    "3.3": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini",
+      "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+      "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+      "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+      "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+      "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+      "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+      "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+      "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+    ],
+    "3.4": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini",
+      "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+      "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+      "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+      "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+      "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+      "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+      "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+      "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+    ],
+    "3.5": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini",
+      "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+      "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+      "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+      "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+      "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+      "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+      "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+      "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+    ],
+    "4.0": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini",
+      "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+      "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+      "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+      "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+      "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+      "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+      "sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+      "sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+    ],
+    "4.1": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini",
+      "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+      "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+      "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+      "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+      "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+      "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+      "grep -q 'sphinxcontrib-htmlhelp>=2.0.0' setup.py && sed -i 's/sphinxcontrib-htmlhelp>=2.0.0/sphinxcontrib-htmlhelp>=2.0.0,<=2.0.4/' setup.py || sed -i 's/sphinxcontrib-htmlhelp/sphinxcontrib-htmlhelp<=2.0.4/' setup.py",
+      "grep -q 'sphinxcontrib-serializinghtml>=1.1.5' setup.py && sed -i 's/sphinxcontrib-serializinghtml>=1.1.5/sphinxcontrib-serializinghtml>=1.1.5,<=1.1.9/' setup.py || sed -i 's/sphinxcontrib-serializinghtml/sphinxcontrib-serializinghtml<=1.1.9/' setup.py"
+    ],
+    "4.2": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini",
+      "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+      "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+      "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+      "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+      "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+      "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+      "sed -i 's/sphinxcontrib-htmlhelp>=2.0.0/sphinxcontrib-htmlhelp>=2.0.0,<=2.0.4/' setup.py",
+      "sed -i 's/sphinxcontrib-serializinghtml>=1.1.5/sphinxcontrib-serializinghtml>=1.1.5,<=1.1.9/' setup.py"
+    ],
+    "4.3": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini",
+      "sed -i 's/Jinja2>=2.3/Jinja2<3.0/' setup.py",
+      "sed -i 's/sphinxcontrib-applehelp/sphinxcontrib-applehelp<=1.0.7/' setup.py",
+      "sed -i 's/sphinxcontrib-devhelp/sphinxcontrib-devhelp<=1.0.5/' setup.py",
+      "sed -i 's/sphinxcontrib-qthelp/sphinxcontrib-qthelp<=1.0.6/' setup.py",
+      "sed -i 's/alabaster>=0.7,<0.8/alabaster>=0.7,<0.7.12/' setup.py",
+      "sed -i \"s/'packaging',/'packaging', 'markupsafe<=2.0.1',/\" setup.py",
+      "sed -i 's/sphinxcontrib-htmlhelp>=2.0.0/sphinxcontrib-htmlhelp>=2.0.0,<=2.0.4/' setup.py",
+      "sed -i 's/sphinxcontrib-serializinghtml>=1.1.5/sphinxcontrib-serializinghtml>=1.1.5,<=1.1.9/' setup.py"
+    ],
+    "5.0": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini"
+    ],
+    "5.1": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini"
+    ],
+    "5.2": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini"
+    ],
+    "7.1": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini"
+    ],
+    "7.2": [
+      "sed -i 's/pytest/pytest -rA/' tox.ini",
+      "apt-get update && apt-get install -y graphviz"
+    ]
+  }
+}
