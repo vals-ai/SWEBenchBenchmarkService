@@ -6,10 +6,10 @@ from pathlib import Path
 import re
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
+from unittest.mock import AsyncMock
 from benchmark_service.sandbox import (
     DaytonaProviderConfig,
     ExecResult,
@@ -24,8 +24,11 @@ from benchmark_service.schemas import EvaluateResponseRequest, Resources, Stream
 from pydantic import ValidationError
 
 import swebench_service.benchmark_service as service_module
+from swebench_service.evaluation import EchoedPrediction
 from swebench_service.benchmark_service import (
+    MAX_PATCH_FILE_BYTES,
     PREDICTION_CAPTURE_COMMAND,
+    PREDICTION_CAPTURE_PATH_PREFIX,
     PREDICTION_PATH,
     SWEBenchService,
     _resume_sandbox_name,  # pyright: ignore[reportPrivateUsage]
@@ -79,7 +82,7 @@ class FakeSandbox(Sandbox):
     async def exec(self, command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
         self.commands.append((command, cwd))
         if PREDICTION_CAPTURE_COMMAND in command:
-            match = re.search(r">\s*(\S+)", command)
+            match = re.search(r">\s*(\S*swebench-prediction-capture\S*)", command)
             capture_path = match.group(1) if match is not None else PREDICTION_PATH
             self.uploads[capture_path] = self.captured_prediction
             return ExecResult(exit_code=0, output=str(len(self.captured_prediction)))
@@ -175,7 +178,9 @@ class GitSandbox(Sandbox):
             .replace("/setup.sh", str(self.root / "setup.sh"))
             .replace("/testbed", str(self.repo))
         )
-        return re.sub(r"stat -c %s -- (\S+)", r"wc -c < \1", localized)
+        # macOS wc pads its count with spaces; production `stat -c %s` does not
+        # the path is either a quoted "$var" or a bare token; do not swallow a closing `)"`
+        return re.sub(r'stat -c %s -- ("[^"]*"|\S+)', r"wc -c < \1 | tr -d ' '", localized)
 
     async def exec(self, command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
         del timeout
@@ -375,7 +380,7 @@ async def test_failed_evaluation_resumes_from_exact_persisted_patch(
     async def fail_evaluation(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         nonlocal evaluation_started
@@ -405,14 +410,14 @@ async def test_failed_evaluation_resumes_from_exact_persisted_patch(
     async def succeed_evaluation(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
-        evaluated_predictions.append(prediction)
+        evaluated_predictions.append(prediction.text)
         yield StreamResultChunk(
             type="result",
             data=EvaluationResult(
-                prediction=prediction,
+                **prediction.fields(),
                 patch_successfully_applied=True,
                 resolved=True,
                 resolution_status="FULL",
@@ -455,7 +460,7 @@ async def test_resume_deletes_sandbox_when_evaluation_fails(monkeypatch: pytest.
     async def fail_evaluation(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         if False:
@@ -519,7 +524,7 @@ async def test_resume_rejects_changed_task_contract_before_loading_artifact(
     async def stop_after_checkpoint(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         del task_id, sandbox, prediction, dataset
@@ -666,7 +671,7 @@ async def test_resume_honors_dataset_carried_by_request(monkeypatch: pytest.Monk
     async def evaluate_prediction(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         evaluated_datasets.append(dataset)
@@ -745,7 +750,7 @@ async def test_upload_failure_does_not_start_evaluation_or_emit_checkpoint(
     async def evaluation(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         nonlocal evaluation_started
@@ -780,10 +785,10 @@ async def test_empty_prediction_resumes_without_git_apply(monkeypatch: pytest.Mo
     async def evaluation(
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
-        assert prediction is None
+        assert prediction.text is None
         yield StreamResultChunk(type="result", data={"resolved": False})
 
     monkeypatch.setattr(benchmark, "_evaluate_prediction", evaluation)
@@ -825,103 +830,7 @@ async def test_capture_rejects_oversized_remote_patch_before_download() -> None:
     assert sandbox.downloads == []
 
 
-async def test_capture_rejects_stream_growth_without_unbounded_download(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    benchmark = service()
-    limit = 8
-    sandbox = FakeSandbox(captured_prediction=b"x" * limit)
-
-    async def growing_command(
-        command: str,
-        *,
-        cwd: str | None = None,
-        timeout: float | None = None,
-    ) -> AsyncGenerator[str, None]:
-        del command, cwd, timeout
-        yield "SWEBENCH_PREDICTION_BASE64_BEGIN\r\n"
-        yield base64.b64encode(b"x" * (limit + 1)).decode()
-        yield "\r\nSWEBENCH_PREDICTION_BASE64_END\r\n"
-
-    sandbox.command = growing_command  # type: ignore[method-assign]
-    sandbox.download_file = AsyncMock(side_effect=AssertionError("download_file must not be awaited"))  # type: ignore[method-assign]
-    monkeypatch.setattr(service_module, "MAX_PREDICTION_BYTES", limit)
-
-    with pytest.raises(ValueError, match="size limit"):
-        await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
-
-    sandbox.download_file.assert_not_awaited()
-
-
-async def test_capture_ignores_daytona_pty_noise() -> None:
-    benchmark = service()
-    sandbox = FakeSandbox(captured_prediction=b"bounded")
-
-    async def noisy_command(
-        command: str,
-        *,
-        cwd: str | None = None,
-        timeout: float | None = None,
-    ) -> AsyncGenerator[str, None]:
-        del command, cwd, timeout
-        yield "root@sandbox:~# "
-        yield "stty -echo\r\n"
-        yield "root@sandbox:~# SWEBENCH_PREDICTION_BASE64_BEGIN\r\n"
-        yield f"{base64.b64encode(sandbox.captured_prediction).decode()}\r\n"
-        yield "SWEBENCH_PREDICTION_BASE64_END\r\n"
-
-    sandbox.command = noisy_command  # type: ignore[method-assign]
-
-    assert await benchmark._capture_prediction(sandbox) == b"bounded"  # pyright: ignore[reportPrivateUsage]
-
-
-async def test_capture_propagates_command_failure_after_complete_frame() -> None:
-    benchmark = service()
-    sandbox = FakeSandbox(captured_prediction=b"bounded")
-
-    async def failing_command(
-        command: str,
-        *,
-        cwd: str | None = None,
-        timeout: float | None = None,
-    ) -> AsyncGenerator[str, None]:
-        del command, cwd, timeout
-        yield "SWEBENCH_PREDICTION_BASE64_BEGIN\r\n"
-        yield f"{base64.b64encode(sandbox.captured_prediction).decode()}\r\n"
-        yield "SWEBENCH_PREDICTION_BASE64_END\r\n"
-        raise RuntimeError("sandbox command failed")
-
-    sandbox.command = failing_command  # type: ignore[method-assign]
-
-    with pytest.raises(RuntimeError, match="sandbox command failed"):
-        await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
-
-
-async def test_capture_stream_supplies_finite_command_timeout() -> None:
-    benchmark = service()
-    sandbox = FakeSandbox(captured_prediction=b"bounded")
-    observed_timeouts: list[float | None] = []
-    original_command = sandbox.command
-
-    async def recording_command(
-        command: str,
-        *,
-        cwd: str | None = None,
-        timeout: float | None = None,
-    ) -> AsyncGenerator[str, None]:
-        observed_timeouts.append(timeout)
-        async for chunk in original_command(command, cwd=cwd, timeout=timeout):
-            yield chunk
-
-    sandbox.command = recording_command  # type: ignore[method-assign]
-
-    assert await benchmark._capture_prediction(sandbox) == b"bounded"  # pyright: ignore[reportPrivateUsage]
-    assert len(observed_timeouts) == 1
-    timeout = observed_timeouts[0]
-    assert timeout is not None and 0 < timeout < float("inf")
-
-
-async def test_capture_rejects_patch_that_changes_declared_size_during_stream() -> None:
+async def test_capture_rejects_patch_that_changes_declared_size_between_stat_and_download() -> None:
     benchmark = service()
     sandbox = FakeSandbox(captured_prediction=b"changed")
 
@@ -943,7 +852,37 @@ async def test_capture_rejects_patch_that_changes_declared_size_during_stream() 
     with pytest.raises(RuntimeError, match="changed size"):
         await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
 
-    assert sandbox.downloads == []
+    assert len(sandbox.downloads) == 1
+
+
+async def test_capture_downloads_through_the_file_api_not_a_pty_stream() -> None:
+    """A PTY stream can lose output across a Daytona reconnect; the file API is bounded by the stat'd size."""
+    benchmark = service()
+    sandbox = FakeSandbox(captured_prediction=b"x" * 5_000_000)
+
+    assert await benchmark._capture_prediction(sandbox) == b"x" * 5_000_000  # pyright: ignore[reportPrivateUsage]
+    assert len(sandbox.downloads) == 1
+    assert sandbox.downloads[0].startswith(PREDICTION_CAPTURE_PATH_PREFIX)
+    assert not any("base64 " in command for command, _ in sandbox.commands)
+
+
+async def test_capture_retries_a_lost_download_response() -> None:
+    benchmark = service()
+    sandbox = FakeSandbox(captured_prediction=b"bounded")
+    original_download = sandbox.download_file
+    attempts = 0
+
+    async def flaky_download(remote_path: str) -> bytes:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise SandboxError("lost response")
+        return await original_download(remote_path)
+
+    sandbox.download_file = flaky_download  # type: ignore[method-assign]
+
+    assert await benchmark._capture_prediction(sandbox) == b"bounded"  # pyright: ignore[reportPrivateUsage]
+    assert attempts == 2
 
 
 async def test_capture_retry_replaces_read_only_file_after_lost_response() -> None:
@@ -961,7 +900,7 @@ async def test_capture_retry_replaces_read_only_file_after_lost_response() -> No
         nonlocal attempts
         if PREDICTION_CAPTURE_COMMAND in command:
             attempts += 1
-            match = re.search(r">\s*(\S+)", command)
+            match = re.search(r">\s*(\S*swebench-prediction-capture\S*)", command)
             assert match is not None
             capture_path = match.group(1)
             if attempts == 1:
@@ -1092,3 +1031,144 @@ async def test_cancelled_resume_sandbox_deletion_finishes_cleanup() -> None:
         await task
 
     assert provider.deleted == [provider.sandbox.id]
+
+
+class StreamingFakeSandbox(FakeSandbox):
+    """A provider that streams downloads, like Daytona, so the transfer can stop at the limit."""
+
+    async def stream_download(self, remote_path: str) -> AsyncGenerator[bytes, None]:
+        self.downloads.append(remote_path)
+        data = self.uploads[remote_path]
+        for offset in range(0, len(data), 4):
+            yield data[offset : offset + 4]
+
+
+async def test_capture_streams_the_download_when_the_provider_can(monkeypatch: pytest.MonkeyPatch) -> None:
+    benchmark = service()
+    sandbox = StreamingFakeSandbox(captured_prediction=b"streamed-patch")
+    sandbox.download_file = AsyncMock(side_effect=AssertionError("whole-file download must not be used"))  # type: ignore[method-assign]
+
+    assert await benchmark._capture_prediction(sandbox) == b"streamed-patch"  # pyright: ignore[reportPrivateUsage]
+    assert len(sandbox.downloads) == 1
+
+
+async def test_capture_stops_a_streamed_download_that_grows_past_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A replaced capture file cannot make the service buffer more than the limit."""
+    benchmark = service()
+    limit = 8
+    sandbox = StreamingFakeSandbox(captured_prediction=b"x" * limit)
+    original_exec = sandbox.exec
+
+    async def swap_after_stat(command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
+        result = await original_exec(command, cwd=cwd, timeout=timeout)
+        if PREDICTION_CAPTURE_COMMAND in command:
+            match = re.search(r">\s*(\S*swebench-prediction-capture\S*)", command)
+            assert match is not None
+            sandbox.uploads[match.group(1)] = b"x" * (limit * 4)
+        return result
+
+    sandbox.exec = swap_after_stat  # type: ignore[method-assign]
+    monkeypatch.setattr(service_module, "MAX_PREDICTION_BYTES", limit)
+
+    with pytest.raises(ValueError, match="size limit"):
+        await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_capture_leaves_oversized_untracked_artifacts_out_of_the_patch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Lighthouse-style build output in the tree made multi-megabyte patches; only source-sized files are the patch."""
+    benchmark, sandbox = await setup_git_sandbox_with_setup_owned_change(monkeypatch, tmp_path)
+    (sandbox.repo / "agent_owned.txt").write_text("agent change\n")
+    (sandbox.repo / "notes.txt").write_text("small untracked file\n")
+    (sandbox.repo / "latest-run").mkdir()
+    (sandbox.repo / "latest-run" / "report.json").write_bytes(b"{" + b"x" * (2 * MAX_PATCH_FILE_BYTES) + b"}")
+    (sandbox.repo / "trace[1]*.log").write_bytes(b"y" * (MAX_PATCH_FILE_BYTES + 1))
+    (sandbox.repo / "exactly-at-the-bound.bin").write_bytes(b"z" * MAX_PATCH_FILE_BYTES)
+    excluded: list[str] = []
+
+    prediction = await benchmark._capture_prediction(sandbox, excluded=excluded)  # pyright: ignore[reportPrivateUsage]
+
+    assert b"+agent change" in prediction
+    assert b"notes.txt" in prediction and b"+small untracked file" in prediction
+    assert b"exactly-at-the-bound.bin" in prediction
+    assert b"report.json" not in prediction and b"trace[1]" not in prediction
+    assert sorted(excluded) == ["/latest-run/report.json", "/trace\\[1\\]\\*.log"]
+    assert len(prediction) < MAX_PATCH_FILE_BYTES + 4096
+
+
+async def test_capture_reports_excluded_files_in_the_evaluation_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    benchmark, sandbox = await setup_git_sandbox_with_setup_owned_change(monkeypatch, tmp_path)
+    (sandbox.repo / "latest-run").mkdir()
+    (sandbox.repo / "latest-run" / "artifacts.json").write_bytes(b"x" * (MAX_PATCH_FILE_BYTES + 1))
+
+    async def evaluation(
+        task_id: str,
+        sandbox: Sandbox,
+        prediction: EchoedPrediction,
+        dataset: str | None = None,
+    ) -> AsyncGenerator[StreamChunk, None]:
+        assert prediction.text is None  # nothing but the artifact, which is left out
+        yield StreamResultChunk(type="result", data={"resolved": False})
+
+    monkeypatch.setattr(benchmark, "_evaluate_prediction", evaluation)
+    def no_state(mode: str) -> dict[str, object]:
+        del mode
+        return {}
+
+    monkeypatch.setattr(service_module, "persist_prediction", AsyncMock(return_value=SimpleNamespace(model_dump=no_state)))
+    messages = [chunk.data for chunk in [c async for c in benchmark.evaluate_instance("task-1", sandbox)] if chunk.type == "message"]
+
+    assert any(str(m).startswith("Left 1 untracked file(s) over") and "/latest-run/artifacts.json" in str(m) for m in messages)
+
+
+async def test_capture_retries_when_git_fails_on_a_changing_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A background test run the agent left behind kept writing a file; git failed once with a bogus malloc size."""
+    benchmark = service()
+    sandbox = FakeSandbox(captured_prediction=b"diff --git a/a.py b/a.py\n+fixed\n")
+    original_exec = sandbox.exec
+    failures = iter([ExecResult(exit_code=128, output="fatal: Out of memory, malloc failed (tried to allocate 18446744071905331362 bytes)")])
+    sleeps: list[float] = []
+
+    async def flaky_exec(command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
+        if PREDICTION_CAPTURE_COMMAND in command:
+            failure = next(failures, None)
+            if failure is not None:
+                sandbox.commands.append((command, cwd))
+                return failure
+        return await original_exec(command, cwd=cwd, timeout=timeout)
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    sandbox.exec = flaky_exec  # type: ignore[method-assign]
+    monkeypatch.setattr(service_module.asyncio, "sleep", fake_sleep)
+
+    assert await benchmark._capture_prediction(sandbox) == b"diff --git a/a.py b/a.py\n+fixed\n"  # pyright: ignore[reportPrivateUsage]
+    assert sum(PREDICTION_CAPTURE_COMMAND in command for command, _ in sandbox.commands) == 2
+    assert sleeps == [service_module.CAPTURE_RETRY_DELAY_SECONDS]
+
+
+async def test_capture_gives_up_after_the_attempt_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    benchmark = service()
+    sandbox = FakeSandbox()
+
+    async def always_fail(command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
+        sandbox.commands.append((command, cwd))
+        if PREDICTION_CAPTURE_COMMAND in command:
+            return ExecResult(exit_code=1, output="fatal: not a git repository")
+        return ExecResult(exit_code=0, output="")
+
+    async def fake_sleep(seconds: float) -> None:
+        pass
+
+    sandbox.exec = always_fail  # type: ignore[method-assign]
+    monkeypatch.setattr(service_module.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(RuntimeError, match="Failed to capture SWE-bench prediction"):
+        await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
+    assert sum(PREDICTION_CAPTURE_COMMAND in command for command, _ in sandbox.commands) == service_module.CAPTURE_ATTEMPTS

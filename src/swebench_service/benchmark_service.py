@@ -6,9 +6,7 @@ import hashlib
 import json
 import logging
 import shlex
-from base64 import b64decode
 from urllib.parse import urlsplit
-from binascii import Error as Base64Error
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, cast
@@ -16,6 +14,7 @@ from uuid import uuid4
 
 from benchmark_service import BenchmarkService
 from benchmark_service.sandbox import (
+    ExecResult,
     ImageSource,
     Sandbox,
     SandboxCommandError,
@@ -35,15 +34,19 @@ from benchmark_service.schemas import (
 )
 import httpx
 
+from swebench.harness.constants import TESTS_TIMEOUT
+
 from swebench_service import (
     DISK_PATH,
     EVAL_OUTPUT_PATH,
     MULTIMODAL_DEV_DISK_PATH,
     MULTIMODAL_DISK_PATH,
+    EchoedPrediction,
     asset_restore_commands,
     asset_sandbox_path,
     create_evaluation_script,
     create_run_command,
+    echo_prediction,
     get_pre_install_commands,
     grade_test_output,
     load_dataset_from_disk,
@@ -64,16 +67,34 @@ PROBLEM_STATEMENT_PATH = "/tmp/problem_statement.txt"
 PREDICTION_PATH = "/tmp/swebench-prediction.patch"
 AGENT_BASELINE_TREE_PATH = "/tmp/swebench-agent-baseline.tree"
 AGENT_BASELINE_INDEX_PATH = "/tmp/swebench-agent-baseline.index"
+# Untracked files above this size are build or report artifacts (Lighthouse writes its `latest-run`
+# output into the repo, test runs leave logs), never source changes: gold patches are kilobytes.
+# Leaving them out keeps the patch, its result frame, and the eval script's `git apply` bounded, and
+# keeps `git diff` off files a leftover agent process may still be writing.
+MAX_PATCH_FILE_BYTES = 1024 * 1024
+# `git add -N` / `git diff` fail when a file changes size under them (an agent's background test run
+# still writing); the tree settles within seconds once the agent has exited.
+CAPTURE_ATTEMPTS = 3
+CAPTURE_RETRY_DELAY_SECONDS = 5.0
 PREDICTION_CAPTURE_COMMAND = (
     f"umask 077; baseline=$(cat {AGENT_BASELINE_TREE_PATH}) "
-    "&& git add -N . "
-    '&& git diff --binary --full-index --no-ext-diff --no-textconv --no-color "$baseline" --'
+    "&& exclude=$(mktemp) "
+    "&& git ls-files --others --exclude-standard | while IFS= read -r f; do "
+    f'[ -f "$f" ] && [ "$(stat -c %s -- "$f")" -gt {MAX_PATCH_FILE_BYTES} ] '
+    # gitignore syntax: anchor at the repo root and escape its glob characters
+    + r"&& printf '/%s\n' " + '"$f"' + r" | sed 's/[][*?\\]/\\&/g'; "
+    + 'done > "$exclude"; '
+    + "sed 's/^/excluded /' \"$exclude\" "
+    + '&& git -c core.excludesFile="$exclude" add -N . '
+    + '&& git diff --binary --full-index --no-ext-diff --no-textconv --no-color "$baseline" --'
 )
 PREDICTION_CAPTURE_PATH_PREFIX = "/tmp/swebench-prediction-capture"
-PREDICTION_CAPTURE_TIMEOUT_SECONDS = 300.0
-_PREDICTION_STREAM_BEGIN = "SWEBENCH_PREDICTION_BASE64_BEGIN"
-_PREDICTION_STREAM_END = "SWEBENCH_PREDICTION_BASE64_END"
 COMMAND_QUIET_SECONDS = 300.0
+# A test suite that stops producing output for this long is treated as timed out, as the SWE-bench
+# harness treats a run over its 30-minute budget. Without a bound a hung suite (a Jest worker that
+# died of a V8 heap overflow, a rendering runner waiting on a page that threw) blocks the task
+# forever: the watchdog above only reports silence.
+EVAL_STALL_SECONDS = 1800.0
 EVAL_SANDBOX_CREATE_TIMEOUT_SECONDS = 600
 EVAL_SANDBOX_AUTO_STOP_MINUTES = 15
 IMAGE_DIGEST_OVERRIDES = {
@@ -86,6 +107,9 @@ MULTIMODAL_DATASETS = frozenset({MULTIMODAL_DATASET, MULTIMODAL_DEV_DATASET})
 # Xvfb (Chart.js, openlayers, lighthouse), Puppeteer, and Jest over monorepos. They get the
 # allocation the large Verified tasks already use.
 MULTIMODAL_RESOURCES = Resources(vcpu=4, memory=8, disk=10)
+# carbon's eval runs Jest with four workers over a monorepo; in 8 GB a worker dies of a V8 heap
+# overflow and the suite hangs, and agents polling their own Jest runs crashed the same way.
+MULTIMODAL_REPO_RESOURCES = {"carbon-design-system/carbon": Resources(vcpu=4, memory=16, disk=10)}
 # Binary test assets (rendering baselines) are fetched from the dataset's URLs at grading time.
 # Only https URLs on these hosts are fetched, redirects are refused, and a body over the cap is
 # rejected, so a dataset revision cannot steer the service at internal endpoints or exhaust it.
@@ -127,6 +151,10 @@ def _resume_sandbox_name(state: EvalResumeState) -> str:
     identity = f"{state.benchmark_id}:{state.task_id}:{state.prediction_sha256}"
     task_hash = hashlib.sha256(identity.encode()).hexdigest()[:8]
     return f"swebench-eval-resume-{task_hash}-{uuid4().hex[:8]}"
+
+
+class EvaluationStalled(RuntimeError):
+    """The test command produced no output for EVAL_STALL_SECONDS."""
 
 
 def watchdog_message(quiet_seconds: float) -> str:
@@ -171,44 +199,23 @@ async def _create_owned_sandbox(
         raise
 
 
-async def _read_sandbox_file_bounded(sandbox: Sandbox, path: str, *, limit: int) -> bytes:
-    decoded = bytearray()
-    line_buffer = ""
-    started = False
-    ended = False
-    command = (
-        f"printf '%s\\n' {_PREDICTION_STREAM_BEGIN} && "
-        f"base64 {shlex.quote(path)} && "
-        f"printf '%s\\n' {_PREDICTION_STREAM_END}"
-    )
-    try:
-        async for chunk in sandbox.command(
-            command,
-            cwd="/testbed",
-            timeout=PREDICTION_CAPTURE_TIMEOUT_SECONDS,
-        ):
-            line_buffer += chunk.replace("\r", "")
-            while "\n" in line_buffer:
-                line, line_buffer = line_buffer.split("\n", 1)
-                value = line.strip()
-                if not started:
-                    started = value.endswith(_PREDICTION_STREAM_BEGIN)
-                    continue
-                if ended:
-                    continue
-                if value == _PREDICTION_STREAM_END:
-                    ended = True
-                    continue
-                if not value:
-                    continue
-                decoded.extend(b64decode(value, validate=True))
-                if len(decoded) > limit:
-                    raise ValueError(f"SWE-bench prediction exceeds the {limit}-byte size limit")
-        if not ended:
-            raise ValueError("SWE-bench sandbox returned invalid base64 prediction data")
-    except (Base64Error, UnicodeEncodeError) as exc:
-        raise ValueError("SWE-bench sandbox returned invalid base64 prediction data") from exc
-    return bytes(decoded)
+async def _download_bounded(sandbox: Sandbox, path: str, *, limit: int) -> bytes:
+    """Download a sandbox file, refusing to buffer more than `limit` bytes.
+
+    The capture file is read-only and its size was checked first, but a process still
+    running in the sandbox could unlink and replace the path in between. Providers that
+    stream (Daytona does) let the transfer stop at the limit; the plain download is the
+    fallback for a provider that only offers whole-file reads.
+    """
+    stream = getattr(sandbox, "stream_download", None)
+    if stream is None:
+        return await sandbox.download_file(path)
+    data = bytearray()
+    async for chunk in cast(AsyncGenerator[bytes, None], stream(path)):
+        data.extend(chunk)
+        if len(data) > limit:
+            raise ValueError(f"SWE-bench prediction exceeds the {limit}-byte size limit")
+    return bytes(data)
 
 
 class SWEBenchService(BenchmarkService):
@@ -238,8 +245,10 @@ class SWEBenchService(BenchmarkService):
         *,
         cwd: str,
         quiet_seconds: float = COMMAND_QUIET_SECONDS,
+        stall_seconds: float = EVAL_STALL_SECONDS,
     ) -> AsyncGenerator[str, None]:
         output: asyncio.Queue[str | None] = asyncio.Queue()
+        quiet_for = 0.0
 
         async def stream_command() -> None:
             try:
@@ -254,8 +263,12 @@ class SWEBenchService(BenchmarkService):
                 try:
                     line = await asyncio.wait_for(output.get(), timeout=quiet_seconds)
                 except TimeoutError:
+                    quiet_for += quiet_seconds
+                    if quiet_for >= stall_seconds:
+                        raise EvaluationStalled(f"no output for {quiet_for:.0f} seconds") from None
                     yield watchdog_message(quiet_seconds)
                     continue
+                quiet_for = 0.0
                 if line is None:
                     break
                 yield line
@@ -303,7 +316,7 @@ class SWEBenchService(BenchmarkService):
             resources.vcpu = 4
             resources.memory = 8
         if (dataset or "default") in MULTIMODAL_DATASETS:
-            resources = MULTIMODAL_RESOURCES.model_copy()
+            resources = MULTIMODAL_REPO_RESOURCES.get(cast(str, task.get("repo", "")), MULTIMODAL_RESOURCES).model_copy()
 
         return RetrieveTaskResponse(
             source=ImageSource(image=docker_image),
@@ -398,7 +411,7 @@ class SWEBenchService(BenchmarkService):
             raise ValueError("SWE-bench eval resume task contract does not match the current evaluator")
         prediction_bytes = await load_prediction(state)
         yield StreamEvalResumeStateChunk(type="eval_resume_state", data=state.model_dump(mode="json"))
-        prediction = prediction_bytes.decode("utf-8", errors="replace") or None
+        prediction = echo_prediction(prediction_bytes)
 
         async with request.sandbox_provider.create_provider() as provider:
             sandbox = await _create_owned_sandbox(
@@ -455,7 +468,14 @@ class SWEBenchService(BenchmarkService):
 
         # Get agent's prediction (git diff)
         yield StreamMessageChunk(type="message", data="Capturing agent's changes...")
-        prediction_bytes = await self._capture_prediction(sandbox)
+        excluded: list[str] = []
+        prediction_bytes = await self._capture_prediction(sandbox, excluded=excluded)
+        if excluded:
+            shown = ", ".join(excluded[:20]) + (" ..." if len(excluded) > 20 else "")
+            yield StreamMessageChunk(
+                type="message",
+                data=f"Left {len(excluded)} untracked file(s) over {MAX_PATCH_FILE_BYTES} bytes out of the patch: {shown}",
+            )
 
         task_data = await self.retrieve_task(task_id, skip_validation=True, dataset=dataset)
         resume_state = await persist_prediction(
@@ -466,12 +486,17 @@ class SWEBenchService(BenchmarkService):
             task_contract_sha256=self._task_contract_sha256(task_id, dataset, task_data),
         )
         yield StreamEvalResumeStateChunk(type="eval_resume_state", data=resume_state.model_dump(mode="json"))
-        prediction = prediction_bytes.decode("utf-8", errors="replace") or None
+        prediction = echo_prediction(prediction_bytes)
 
         async for chunk in self._evaluate_prediction(task_id, sandbox, prediction, dataset=dataset):
             yield chunk
 
-    async def _capture_prediction(self, sandbox: Sandbox) -> bytes:
+    async def _capture_prediction(self, sandbox: Sandbox, *, excluded: list[str] | None = None) -> bytes:
+        """Capture the agent's patch against the post-setup baseline.
+
+        `excluded`, when given, receives the untracked paths left out for exceeding
+        MAX_PATCH_FILE_BYTES (in gitignore form: root-anchored, glob characters escaped).
+        """
         capture_path = f"{PREDICTION_CAPTURE_PATH_PREFIX}-{uuid4().hex}.patch"
         quoted_capture_path = shlex.quote(capture_path)
         capture_command = (
@@ -480,30 +505,28 @@ class SWEBenchService(BenchmarkService):
             f"&& chmod 0400 {quoted_capture_path} && stat -c %s -- {quoted_capture_path}"
         )
         try:
-            result = await with_retry(
-                sandbox,
-                lambda: sandbox.exec(
-                    capture_command,
-                    cwd="/testbed",
-                ),
-            )
-            if result.exit_code != 0:
-                raise RuntimeError(f"Failed to capture SWE-bench prediction:\n{result.output}")
+            result = await self._run_capture_command(sandbox, capture_command)
+            lines = [line.strip() for line in result.output.strip().splitlines()]
+            if excluded is not None:
+                excluded.extend(line.removeprefix("excluded ") for line in lines[:-1] if line.startswith("excluded "))
             try:
-                expected_size = int(result.output.strip().splitlines()[-1])
+                expected_size = int(lines[-1])
             except (IndexError, ValueError) as exc:
                 raise RuntimeError("Failed to read captured SWE-bench prediction size") from exc
             if not 0 <= expected_size <= MAX_PREDICTION_BYTES:
                 raise ValueError(f"SWE-bench prediction exceeds the {MAX_PREDICTION_BYTES}-byte size limit")
 
-            prediction = await _read_sandbox_file_bounded(
-                sandbox,
-                capture_path,
-                limit=MAX_PREDICTION_BYTES,
+            # The capture file is read-only from here on, so the size just reported bounds
+            # the download. It goes through the sandbox file API: the PTY stream used before
+            # could lose output across a Daytona websocket reconnect and end a large patch
+            # short with no command error, which surfaced as invalid base64 on the test-split
+            # tasks whose agents leave multi-megabyte artifacts in the working tree.
+            prediction = cast(
+                bytes, await with_retry(sandbox, lambda: _download_bounded(sandbox, capture_path, limit=MAX_PREDICTION_BYTES))
             )
             if len(prediction) != expected_size:
                 raise RuntimeError(
-                    "Captured SWE-bench prediction changed size during streaming: "
+                    "Captured SWE-bench prediction changed size between capture and download: "
                     f"expected {expected_size} bytes, got {len(prediction)}"
                 )
             return prediction
@@ -512,6 +535,17 @@ class SWEBenchService(BenchmarkService):
                 await sandbox.exec(f"rm -f -- {capture_path}", cwd="/testbed")
             except Exception:
                 logger.exception("Failed to remove SWE-bench prediction capture %s", capture_path)
+
+    async def _run_capture_command(self, sandbox: Sandbox, capture_command: str) -> ExecResult:
+        for attempt in range(1, CAPTURE_ATTEMPTS + 1):
+            result = cast(ExecResult, await with_retry(sandbox, lambda: sandbox.exec(capture_command, cwd="/testbed")))
+            if result.exit_code == 0:
+                return result
+            if attempt == CAPTURE_ATTEMPTS:
+                raise RuntimeError(f"Failed to capture SWE-bench prediction:\n{result.output}")
+            logger.warning("SWE-bench prediction capture attempt %d failed, retrying:\n%s", attempt, result.output)
+            await asyncio.sleep(CAPTURE_RETRY_DELAY_SECONDS)
+        raise AssertionError("unreachable")
 
     async def _stage_image_assets(self, sandbox: Sandbox, test_spec: TestSpec) -> list[str]:
         """Upload the binary assets the test patch needs and return the lines that restore them.
@@ -556,7 +590,7 @@ class SWEBenchService(BenchmarkService):
         self,
         task_id: str,
         sandbox: Sandbox,
-        prediction: str | None,
+        prediction: EchoedPrediction,
         dataset: str | None = None,
     ) -> AsyncGenerator[StreamChunk, None]:
         """Run the existing atomic SWE-bench evaluator for one captured patch."""
@@ -577,6 +611,7 @@ class SWEBenchService(BenchmarkService):
         MAX_RETRIES = 3
 
         test_output: list[str] = []
+        stalled: EvaluationStalled | None = None
         for attempt in range(MAX_RETRIES):
             test_output = []
             msg = (
@@ -592,6 +627,9 @@ class SWEBenchService(BenchmarkService):
                     yield StreamMessageChunk(type="message", data=line)
                 break
             except SandboxCommandError:
+                break
+            except EvaluationStalled as exc:
+                stalled = exc
                 break
             except (SandboxError, RuntimeError):
                 if attempt == MAX_RETRIES - 1:
@@ -611,6 +649,13 @@ class SWEBenchService(BenchmarkService):
                 graded_output = log_file.output
         except SandboxError:
             pass
+        if stalled is not None:
+            # The harness marks a run over its time budget with this line and grades it unresolved.
+            graded_output = f"{graded_output}\n{TESTS_TIMEOUT}\n"
+            yield StreamMessageChunk(
+                type="message",
+                data=f"Evaluation stalled ({stalled}); graded as a test timeout, as the SWE-bench harness does",
+            )
 
         evaluation_result = grade_test_output(graded_output, test_spec, prediction)
 

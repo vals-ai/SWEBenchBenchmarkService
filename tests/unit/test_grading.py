@@ -7,6 +7,8 @@ import pytest
 from swebench.harness.constants import END_TEST_OUTPUT, START_TEST_OUTPUT, TEST_EXIT_CODE
 from swebench.harness.utils import TestSpec
 
+from benchmark_service.schemas import StreamResultChunk
+
 from swebench_service import (
     asset_restore_commands,
     asset_sandbox_path,
@@ -14,8 +16,10 @@ from swebench_service import (
     get_pre_install_commands,
     grade_test_output,
     test_patch_assets as patch_assets,
+    trim_log_preamble,
 )
 from swebench_service.benchmark_service import SWEBenchService
+from swebench_service.evaluation import MAX_ECHOED_PREDICTION_BYTES, echo_prediction
 
 
 def _spec(eval_type: str, *, f2p: list[str], p2p: list[str], image_assets: dict[str, Any] | None = None) -> TestSpec:
@@ -117,6 +121,35 @@ class TestEvaluationScript:
         spec = _spec("pass_and_fail", f2p=["t"], p2p=[])
         assert create_evaluation_script(spec, spec.instance_id, []) == spec.eval_script
         assert create_evaluation_script(spec, spec.instance_id) == spec.eval_script
+
+    def test_the_preamble_logs_headers_instead_of_the_whole_repository(self) -> None:
+        """The images have a squashed history, so `git show` there is the entire repo as one diff."""
+        base = "716923f458c2ba90b5a4ec3ab41dcae8bc0a9917"
+        preamble = [
+            "#!/bin/bash",
+            "set -uxo pipefail",
+            "cd /testbed",
+            "git config --global --add safe.directory /testbed",
+            "source $NVM_DIR/nvm.sh",
+            "git status",
+            "git show",
+            f"git -c core.fileMode=false diff {base}",
+            f"git checkout {base} tests/languages/fsharp/keyword_feature.test",
+        ]
+        spec = _spec("pass_and_fail", f2p=["t"], p2p=[])
+        spec.eval_script_list = [*preamble, *spec.eval_script_list]
+        script = create_evaluation_script(spec, spec.instance_id)
+        lines = script.split("\n")
+        assert "git show --no-patch" in lines and "git show" not in lines
+        assert f"git -c core.fileMode=false diff --stat {base}" in lines
+        assert f"git -c core.fileMode=false diff {base}" not in lines
+        # Everything else, including the test-file checkout that names the same commit, is untouched.
+        assert script.endswith("\n".join(spec.eval_script_list[-4:]) + "\n")
+        assert f"git checkout {base} tests/languages/fsharp/keyword_feature.test" in lines
+
+    def test_trim_leaves_other_git_commands_alone(self) -> None:
+        script = "git show --stat\ngit diff HEAD -- package.json\ngit show HEAD:file\n: 'marker'"
+        assert trim_log_preamble(script) == script
 
     def test_patch_assets_read_path_and_url_from_both_patch_lists(self) -> None:
         spec = _spec(
@@ -235,3 +268,55 @@ class TestAssetStaging:
         with pytest.raises(RuntimeError, match="outside the allowed hosts .*<none>"):
             await self._stage(service, spec, {}, monkeypatch)
 
+
+
+class TestEchoedPrediction:
+    """The result is one WebSocket frame and the framework client drops frames over 10 MiB."""
+
+    def test_a_small_patch_is_echoed_whole(self) -> None:
+        spec = _spec("fail_only", f2p=["tests/a.py::test_fix"], p2p=[])
+        patch = "diff --git a b\n+é\n".encode()
+        result = grade_test_output(_log("PASSED tests/a.py::test_fix"), spec, echo_prediction(patch))
+        assert result.prediction == "diff --git a b\n+é\n"
+        assert result.prediction_bytes == len(patch)
+        assert result.prediction_truncated is False
+
+    def test_a_plain_string_is_echoed_as_is(self) -> None:
+        spec = _spec("fail_only", f2p=["tests/a.py::test_fix"], p2p=[])
+        result = grade_test_output(_log("PASSED tests/a.py::test_fix"), spec, "diff")
+        assert (result.prediction, result.prediction_bytes, result.prediction_truncated) == ("diff", 4, False)
+
+    def test_no_patch_stays_none(self) -> None:
+        spec = _spec("fail_only", f2p=["tests/a.py::test_fix"], p2p=[])
+        for prediction in (None, echo_prediction(b"")):
+            result = grade_test_output(_log("bash: pytest: command not found"), spec, prediction)
+            assert result.prediction is None
+            assert result.prediction_bytes is None
+            assert result.prediction_truncated is False
+
+    def test_a_patch_bloated_by_build_artifacts_is_cut_and_the_frame_stays_under_the_limit(self) -> None:
+        spec = _spec("fail_only", f2p=["tests/a.py::test_fix"], p2p=[])
+        patch = b"diff --git a/latest-run/artifacts.json b/latest-run/artifacts.json\n" + b"+x" * (12 * 1024 * 1024)
+        result = grade_test_output(_log("FAILED tests/a.py::test_fix"), spec, echo_prediction(patch))
+        assert result.prediction is not None
+        assert result.prediction.startswith("diff --git a/latest-run/artifacts.json")
+        assert len(result.prediction.encode()) == MAX_ECHOED_PREDICTION_BYTES
+        assert result.prediction_bytes == len(patch)
+        assert result.prediction_truncated is True
+        assert result.resolved is False
+        frame = StreamResultChunk(type="result", data=result.model_dump()).model_dump_json()
+        assert len(frame.encode()) < 10 * 1024 * 1024
+
+    def test_the_cut_never_splits_a_multibyte_character(self) -> None:
+        # One ASCII byte shifts every two-byte "é" off the bound, so the cut lands inside one of them.
+        patch = ("a" + "é" * (MAX_ECHOED_PREDICTION_BYTES // 2)).encode()
+        echoed = echo_prediction(patch)
+        assert echoed.text == "a" + "é" * (MAX_ECHOED_PREDICTION_BYTES // 2 - 1)
+        assert echoed.text is not None and "\ufffd" not in echoed.text
+        assert echoed == (echoed.text, len(patch), True)
+
+    def test_a_cut_on_a_character_boundary_keeps_the_whole_head(self) -> None:
+        patch = ("é" * (MAX_ECHOED_PREDICTION_BYTES // 2 + 1)).encode()
+        echoed = echo_prediction(patch)
+        assert echoed.text == "é" * (MAX_ECHOED_PREDICTION_BYTES // 2)
+        assert echoed.truncated is True
