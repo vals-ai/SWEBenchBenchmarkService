@@ -6,9 +6,7 @@ import hashlib
 import json
 import logging
 import shlex
-from base64 import b64decode
 from urllib.parse import urlsplit
-from binascii import Error as Base64Error
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, cast
@@ -70,9 +68,6 @@ PREDICTION_CAPTURE_COMMAND = (
     '&& git diff --binary --full-index --no-ext-diff --no-textconv --no-color "$baseline" --'
 )
 PREDICTION_CAPTURE_PATH_PREFIX = "/tmp/swebench-prediction-capture"
-PREDICTION_CAPTURE_TIMEOUT_SECONDS = 300.0
-_PREDICTION_STREAM_BEGIN = "SWEBENCH_PREDICTION_BASE64_BEGIN"
-_PREDICTION_STREAM_END = "SWEBENCH_PREDICTION_BASE64_END"
 COMMAND_QUIET_SECONDS = 300.0
 EVAL_SANDBOX_CREATE_TIMEOUT_SECONDS = 600
 EVAL_SANDBOX_AUTO_STOP_MINUTES = 15
@@ -169,46 +164,6 @@ async def _create_owned_sandbox(
         except asyncio.CancelledError:
             pass
         raise
-
-
-async def _read_sandbox_file_bounded(sandbox: Sandbox, path: str, *, limit: int) -> bytes:
-    decoded = bytearray()
-    line_buffer = ""
-    started = False
-    ended = False
-    command = (
-        f"printf '%s\\n' {_PREDICTION_STREAM_BEGIN} && "
-        f"base64 {shlex.quote(path)} && "
-        f"printf '%s\\n' {_PREDICTION_STREAM_END}"
-    )
-    try:
-        async for chunk in sandbox.command(
-            command,
-            cwd="/testbed",
-            timeout=PREDICTION_CAPTURE_TIMEOUT_SECONDS,
-        ):
-            line_buffer += chunk.replace("\r", "")
-            while "\n" in line_buffer:
-                line, line_buffer = line_buffer.split("\n", 1)
-                value = line.strip()
-                if not started:
-                    started = value.endswith(_PREDICTION_STREAM_BEGIN)
-                    continue
-                if ended:
-                    continue
-                if value == _PREDICTION_STREAM_END:
-                    ended = True
-                    continue
-                if not value:
-                    continue
-                decoded.extend(b64decode(value, validate=True))
-                if len(decoded) > limit:
-                    raise ValueError(f"SWE-bench prediction exceeds the {limit}-byte size limit")
-        if not ended:
-            raise ValueError("SWE-bench sandbox returned invalid base64 prediction data")
-    except (Base64Error, UnicodeEncodeError) as exc:
-        raise ValueError("SWE-bench sandbox returned invalid base64 prediction data") from exc
-    return bytes(decoded)
 
 
 class SWEBenchService(BenchmarkService):
@@ -496,11 +451,12 @@ class SWEBenchService(BenchmarkService):
             if not 0 <= expected_size <= MAX_PREDICTION_BYTES:
                 raise ValueError(f"SWE-bench prediction exceeds the {MAX_PREDICTION_BYTES}-byte size limit")
 
-            prediction = await _read_sandbox_file_bounded(
-                sandbox,
-                capture_path,
-                limit=MAX_PREDICTION_BYTES,
-            )
+            # The capture file is read-only from here on, so the size just reported bounds
+            # the download. It goes through the sandbox file API: the PTY stream used before
+            # could lose output across a Daytona websocket reconnect and end a large patch
+            # short with no command error, which surfaced as invalid base64 on the test-split
+            # tasks whose agents leave multi-megabyte artifacts in the working tree.
+            prediction = cast(bytes, await with_retry(sandbox, lambda: sandbox.download_file(capture_path)))
             if len(prediction) != expected_size:
                 raise RuntimeError(
                     "Captured SWE-bench prediction changed size during streaming: "

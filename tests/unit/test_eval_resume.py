@@ -6,7 +6,6 @@ from pathlib import Path
 import re
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -26,6 +25,7 @@ from pydantic import ValidationError
 import swebench_service.benchmark_service as service_module
 from swebench_service.benchmark_service import (
     PREDICTION_CAPTURE_COMMAND,
+    PREDICTION_CAPTURE_PATH_PREFIX,
     PREDICTION_PATH,
     SWEBenchService,
     _resume_sandbox_name,  # pyright: ignore[reportPrivateUsage]
@@ -825,103 +825,7 @@ async def test_capture_rejects_oversized_remote_patch_before_download() -> None:
     assert sandbox.downloads == []
 
 
-async def test_capture_rejects_stream_growth_without_unbounded_download(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    benchmark = service()
-    limit = 8
-    sandbox = FakeSandbox(captured_prediction=b"x" * limit)
-
-    async def growing_command(
-        command: str,
-        *,
-        cwd: str | None = None,
-        timeout: float | None = None,
-    ) -> AsyncGenerator[str, None]:
-        del command, cwd, timeout
-        yield "SWEBENCH_PREDICTION_BASE64_BEGIN\r\n"
-        yield base64.b64encode(b"x" * (limit + 1)).decode()
-        yield "\r\nSWEBENCH_PREDICTION_BASE64_END\r\n"
-
-    sandbox.command = growing_command  # type: ignore[method-assign]
-    sandbox.download_file = AsyncMock(side_effect=AssertionError("download_file must not be awaited"))  # type: ignore[method-assign]
-    monkeypatch.setattr(service_module, "MAX_PREDICTION_BYTES", limit)
-
-    with pytest.raises(ValueError, match="size limit"):
-        await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
-
-    sandbox.download_file.assert_not_awaited()
-
-
-async def test_capture_ignores_daytona_pty_noise() -> None:
-    benchmark = service()
-    sandbox = FakeSandbox(captured_prediction=b"bounded")
-
-    async def noisy_command(
-        command: str,
-        *,
-        cwd: str | None = None,
-        timeout: float | None = None,
-    ) -> AsyncGenerator[str, None]:
-        del command, cwd, timeout
-        yield "root@sandbox:~# "
-        yield "stty -echo\r\n"
-        yield "root@sandbox:~# SWEBENCH_PREDICTION_BASE64_BEGIN\r\n"
-        yield f"{base64.b64encode(sandbox.captured_prediction).decode()}\r\n"
-        yield "SWEBENCH_PREDICTION_BASE64_END\r\n"
-
-    sandbox.command = noisy_command  # type: ignore[method-assign]
-
-    assert await benchmark._capture_prediction(sandbox) == b"bounded"  # pyright: ignore[reportPrivateUsage]
-
-
-async def test_capture_propagates_command_failure_after_complete_frame() -> None:
-    benchmark = service()
-    sandbox = FakeSandbox(captured_prediction=b"bounded")
-
-    async def failing_command(
-        command: str,
-        *,
-        cwd: str | None = None,
-        timeout: float | None = None,
-    ) -> AsyncGenerator[str, None]:
-        del command, cwd, timeout
-        yield "SWEBENCH_PREDICTION_BASE64_BEGIN\r\n"
-        yield f"{base64.b64encode(sandbox.captured_prediction).decode()}\r\n"
-        yield "SWEBENCH_PREDICTION_BASE64_END\r\n"
-        raise RuntimeError("sandbox command failed")
-
-    sandbox.command = failing_command  # type: ignore[method-assign]
-
-    with pytest.raises(RuntimeError, match="sandbox command failed"):
-        await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
-
-
-async def test_capture_stream_supplies_finite_command_timeout() -> None:
-    benchmark = service()
-    sandbox = FakeSandbox(captured_prediction=b"bounded")
-    observed_timeouts: list[float | None] = []
-    original_command = sandbox.command
-
-    async def recording_command(
-        command: str,
-        *,
-        cwd: str | None = None,
-        timeout: float | None = None,
-    ) -> AsyncGenerator[str, None]:
-        observed_timeouts.append(timeout)
-        async for chunk in original_command(command, cwd=cwd, timeout=timeout):
-            yield chunk
-
-    sandbox.command = recording_command  # type: ignore[method-assign]
-
-    assert await benchmark._capture_prediction(sandbox) == b"bounded"  # pyright: ignore[reportPrivateUsage]
-    assert len(observed_timeouts) == 1
-    timeout = observed_timeouts[0]
-    assert timeout is not None and 0 < timeout < float("inf")
-
-
-async def test_capture_rejects_patch_that_changes_declared_size_during_stream() -> None:
+async def test_capture_rejects_patch_that_changes_declared_size_between_stat_and_download() -> None:
     benchmark = service()
     sandbox = FakeSandbox(captured_prediction=b"changed")
 
@@ -943,7 +847,37 @@ async def test_capture_rejects_patch_that_changes_declared_size_during_stream() 
     with pytest.raises(RuntimeError, match="changed size"):
         await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
 
-    assert sandbox.downloads == []
+    assert len(sandbox.downloads) == 1
+
+
+async def test_capture_downloads_through_the_file_api_not_a_pty_stream() -> None:
+    """A PTY stream can lose output across a Daytona reconnect; the file API is bounded by the stat'd size."""
+    benchmark = service()
+    sandbox = FakeSandbox(captured_prediction=b"x" * 5_000_000)
+
+    assert await benchmark._capture_prediction(sandbox) == b"x" * 5_000_000  # pyright: ignore[reportPrivateUsage]
+    assert len(sandbox.downloads) == 1
+    assert sandbox.downloads[0].startswith(PREDICTION_CAPTURE_PATH_PREFIX)
+    assert not any("base64 " in command for command, _ in sandbox.commands)
+
+
+async def test_capture_retries_a_lost_download_response() -> None:
+    benchmark = service()
+    sandbox = FakeSandbox(captured_prediction=b"bounded")
+    original_download = sandbox.download_file
+    attempts = 0
+
+    async def flaky_download(remote_path: str) -> bytes:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise SandboxError("lost response")
+        return await original_download(remote_path)
+
+    sandbox.download_file = flaky_download  # type: ignore[method-assign]
+
+    assert await benchmark._capture_prediction(sandbox) == b"bounded"  # pyright: ignore[reportPrivateUsage]
+    assert attempts == 2
 
 
 async def test_capture_retry_replaces_read_only_file_after_lost_response() -> None:
