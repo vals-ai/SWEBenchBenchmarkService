@@ -515,6 +515,12 @@ class SWEBenchService(BenchmarkService):
                 raise RuntimeError("Failed to read captured SWE-bench prediction size") from exc
             if not 0 <= expected_size <= MAX_PREDICTION_BYTES:
                 raise ValueError(f"SWE-bench prediction exceeds the {MAX_PREDICTION_BYTES}-byte size limit")
+            if expected_size == 0:
+                # An agent that changed nothing produces an empty patch, which is a normal
+                # outcome graded as unresolved. Daytona's streaming download reports a
+                # zero-length file as "No file data received" and raises, so the transfer is
+                # skipped rather than letting a legitimate empty result fail the task.
+                return b""
 
             # The capture file is read-only from here on, so the size just reported bounds
             # the download. It goes through the sandbox file API: the PTY stream used before
