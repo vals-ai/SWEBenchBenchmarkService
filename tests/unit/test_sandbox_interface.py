@@ -8,7 +8,12 @@ import pytest
 from benchmark_service.sandbox import ExecResult, Sandbox
 from benchmark_service.schemas import StreamMessageChunk
 
+from swebench.harness.constants import TESTS_TIMEOUT
+
 from swebench_service.benchmark_service import (
+    MULTIMODAL_REPO_RESOURCES,
+    MULTIMODAL_RESOURCES,
+    EvaluationStalled,
     COMMAND_QUIET_SECONDS,
     PREDICTION_CAPTURE_COMMAND,
     PROBLEM_STATEMENT_PATH,
@@ -239,3 +244,87 @@ async def test_evaluate_instance_grades_captured_log_file(monkeypatch: pytest.Mo
 
     assert (f"cat {EVAL_OUTPUT_PATH}", "/testbed") in sandbox.commands
     assert graded_outputs == ["test_Mul ok\ntest_Abs ok\n"]
+
+
+class NeverOutputsSandbox(FakeSandbox):
+    async def command(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout: float | None = None,
+        env_vars: Mapping[str, str] | None = None,
+    ) -> AsyncGenerator[str, None]:
+        del command, cwd, timeout, env_vars
+        await asyncio.sleep(3600)
+        yield "never"
+
+
+async def test_stream_command_gives_up_on_a_stalled_command() -> None:
+    """A hung test suite (a Jest worker dead of a heap overflow, a rendering runner waiting on a page that threw)
+    produced only watchdog lines for hours; after the stall budget the stream ends with EvaluationStalled."""
+    service = SWEBenchService()
+    sandbox = NeverOutputsSandbox()
+    messages: list[str] = []
+
+    with pytest.raises(EvaluationStalled, match="no output for"):
+        async for message in service.stream_command_with_watchdog(
+            sandbox, "sleep", cwd="/testbed", quiet_seconds=0.01, stall_seconds=0.03
+        ):
+            messages.append(message)
+
+    assert messages and all(message == watchdog_message(0.01) for message in messages)
+    assert len(messages) == 2  # two quiet windows reported, the third trips the bound
+
+
+async def test_stalled_evaluation_is_graded_as_a_test_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = SWEBenchService()
+    service.datasets = {"default": {"task-1": {"base_commit": "abc123", "repo": "openlayers/openlayers", "version": "7.1"}}}
+    graded_outputs: list[str] = []
+
+    async def stall(
+        sandbox: Sandbox, command: str, *, cwd: str, quiet_seconds: float = COMMAND_QUIET_SECONDS
+    ) -> AsyncGenerator[str, None]:
+        yield "Running 12 rendering cases\n"
+        raise EvaluationStalled("no output for 1800 seconds")
+
+    def grade_test_output(test_output: str, test_spec: object, prediction: object) -> EvaluationResult:
+        graded_outputs.append(test_output)
+        return EvaluationResult(patch_successfully_applied=False, resolved=False, resolution_status="NO")
+
+    def make_test_spec(task: object) -> object:
+        return object()
+
+    def create_evaluation_script(spec: object, task_id: str, restore_commands: list[str] | None = None) -> str:
+        return ""
+
+    monkeypatch.setattr("swebench_service.benchmark_service.make_test_spec", make_test_spec)
+    monkeypatch.setattr("swebench_service.benchmark_service.create_evaluation_script", create_evaluation_script)
+    monkeypatch.setattr("swebench_service.benchmark_service.grade_test_output", grade_test_output)
+    monkeypatch.setattr(service, "stream_command_with_watchdog", stall)
+
+    chunks = [chunk async for chunk in service.evaluate_instance("task-1", FakeSandbox())]
+
+    assert graded_outputs and graded_outputs[0].endswith(f"\n{TESTS_TIMEOUT}\n")
+    assert "Running 12 rendering cases" in graded_outputs[0]
+    assert any("stalled" in str(chunk.data) and "test timeout" in str(chunk.data) for chunk in chunks if chunk.type == "message")
+    result = chunks[-1]
+    assert result.type == "result"
+    assert isinstance(result.data, dict) and result.data["resolved"] is False
+
+
+async def test_multimodal_resources_give_carbon_more_memory() -> None:
+    service = SWEBenchService()
+    service.datasets = {
+        "multimodal": {
+            "carbon-design-system__carbon-11352": {"base_commit": "a", "repo": "carbon-design-system/carbon", "version": "16.15", "image": "swebench/x:latest"},
+            "openlayers__openlayers-14332": {"base_commit": "b", "repo": "openlayers/openlayers", "version": "7.1", "image": "swebench/y:latest"},
+        }
+    }
+
+    carbon = await service.retrieve_task("carbon-design-system__carbon-11352", skip_validation=True, dataset="multimodal")
+    openlayers = await service.retrieve_task("openlayers__openlayers-14332", skip_validation=True, dataset="multimodal")
+
+    assert carbon.resources == MULTIMODAL_REPO_RESOURCES["carbon-design-system/carbon"]
+    assert carbon.resources.memory == 16
+    assert openlayers.resources == MULTIMODAL_RESOURCES

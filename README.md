@@ -114,7 +114,7 @@ These images are hosted on [Docker Hub](https://hub.docker.com/u/swebench) and c
 - `psf__requests-2317`
 - every `multimodal` and `multimodal_dev` task: browser suites under Xvfb (Chart.js, openlayers, lighthouse), Puppeteer, and Jest over monorepos
 
-These receive 4 vCPU and 8 GB memory.
+These receive 4 vCPU and 8 GB memory; `carbon-design-system/carbon` tasks receive 16 GB, because their eval runs Jest with four workers over a monorepo and in 8 GB a worker dies of a V8 heap overflow and the suite hangs.
 
 ## API Endpoints
 
@@ -234,7 +234,7 @@ Returns aggregate score as percentage of resolved tasks:
 The evaluation follows SWE-bench's official grading methodology:
 
 1. **Capture Prediction:** Extract the agent's changes via `git diff` against the post-setup baseline. Untracked files over 1 MiB are left out (they are build or report artifacts such as Lighthouse's `latest-run` output, never source changes, and they made patches of tens of MB); the evaluation stream names each one. The capture is retried up to three times when git fails on a file a leftover agent process is still writing.
-2. **Run Tests:** Execute the test suite using the task's evaluation script. The script's own log preamble is trimmed first: its `git show` becomes `git show --no-patch` and its base-commit diff becomes `--stat`, because the task images carry a squashed single-commit history (so `git show` is the whole repository as one diff) and the full diff repeats the agent's patch; neither is graded, and both flood the sandbox stream.
+2. **Run Tests:** Execute the test suite using the task's evaluation script. A suite that produces no output for 30 minutes is treated as timed out and graded unresolved, as the SWE-bench harness treats a run over its time budget; the evaluation stream says so. The script's own log preamble is trimmed first: its `git show` becomes `git show --no-patch` and its base-commit diff becomes `--stat`, because the task images carry a squashed single-commit history (so `git show` is the whole repository as one diff) and the full diff repeats the agent's patch; neither is graded, and both flood the sandbox stream.
 3. **Parse Output:** Extract test results from output using repository-specific parsers
 4. **Grade Results:** Compare against gold test specifications:
    - **Fail-to-Pass (F2P):** Tests that should transition from failing to passing

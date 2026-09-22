@@ -34,6 +34,8 @@ from benchmark_service.schemas import (
 )
 import httpx
 
+from swebench.harness.constants import TESTS_TIMEOUT
+
 from swebench_service import (
     DISK_PATH,
     EVAL_OUTPUT_PATH,
@@ -88,6 +90,11 @@ PREDICTION_CAPTURE_COMMAND = (
 )
 PREDICTION_CAPTURE_PATH_PREFIX = "/tmp/swebench-prediction-capture"
 COMMAND_QUIET_SECONDS = 300.0
+# A test suite that stops producing output for this long is treated as timed out, as the SWE-bench
+# harness treats a run over its 30-minute budget. Without a bound a hung suite (a Jest worker that
+# died of a V8 heap overflow, a rendering runner waiting on a page that threw) blocks the task
+# forever: the watchdog above only reports silence.
+EVAL_STALL_SECONDS = 1800.0
 EVAL_SANDBOX_CREATE_TIMEOUT_SECONDS = 600
 EVAL_SANDBOX_AUTO_STOP_MINUTES = 15
 IMAGE_DIGEST_OVERRIDES = {
@@ -100,6 +107,9 @@ MULTIMODAL_DATASETS = frozenset({MULTIMODAL_DATASET, MULTIMODAL_DEV_DATASET})
 # Xvfb (Chart.js, openlayers, lighthouse), Puppeteer, and Jest over monorepos. They get the
 # allocation the large Verified tasks already use.
 MULTIMODAL_RESOURCES = Resources(vcpu=4, memory=8, disk=10)
+# carbon's eval runs Jest with four workers over a monorepo; in 8 GB a worker dies of a V8 heap
+# overflow and the suite hangs, and agents polling their own Jest runs crashed the same way.
+MULTIMODAL_REPO_RESOURCES = {"carbon-design-system/carbon": Resources(vcpu=4, memory=16, disk=10)}
 # Binary test assets (rendering baselines) are fetched from the dataset's URLs at grading time.
 # Only https URLs on these hosts are fetched, redirects are refused, and a body over the cap is
 # rejected, so a dataset revision cannot steer the service at internal endpoints or exhaust it.
@@ -141,6 +151,10 @@ def _resume_sandbox_name(state: EvalResumeState) -> str:
     identity = f"{state.benchmark_id}:{state.task_id}:{state.prediction_sha256}"
     task_hash = hashlib.sha256(identity.encode()).hexdigest()[:8]
     return f"swebench-eval-resume-{task_hash}-{uuid4().hex[:8]}"
+
+
+class EvaluationStalled(RuntimeError):
+    """The test command produced no output for EVAL_STALL_SECONDS."""
 
 
 def watchdog_message(quiet_seconds: float) -> str:
@@ -231,8 +245,10 @@ class SWEBenchService(BenchmarkService):
         *,
         cwd: str,
         quiet_seconds: float = COMMAND_QUIET_SECONDS,
+        stall_seconds: float = EVAL_STALL_SECONDS,
     ) -> AsyncGenerator[str, None]:
         output: asyncio.Queue[str | None] = asyncio.Queue()
+        quiet_for = 0.0
 
         async def stream_command() -> None:
             try:
@@ -247,8 +263,12 @@ class SWEBenchService(BenchmarkService):
                 try:
                     line = await asyncio.wait_for(output.get(), timeout=quiet_seconds)
                 except TimeoutError:
+                    quiet_for += quiet_seconds
+                    if quiet_for >= stall_seconds:
+                        raise EvaluationStalled(f"no output for {quiet_for:.0f} seconds") from None
                     yield watchdog_message(quiet_seconds)
                     continue
+                quiet_for = 0.0
                 if line is None:
                     break
                 yield line
@@ -296,7 +316,7 @@ class SWEBenchService(BenchmarkService):
             resources.vcpu = 4
             resources.memory = 8
         if (dataset or "default") in MULTIMODAL_DATASETS:
-            resources = MULTIMODAL_RESOURCES.model_copy()
+            resources = MULTIMODAL_REPO_RESOURCES.get(cast(str, task.get("repo", "")), MULTIMODAL_RESOURCES).model_copy()
 
         return RetrieveTaskResponse(
             source=ImageSource(image=docker_image),
@@ -591,6 +611,7 @@ class SWEBenchService(BenchmarkService):
         MAX_RETRIES = 3
 
         test_output: list[str] = []
+        stalled: EvaluationStalled | None = None
         for attempt in range(MAX_RETRIES):
             test_output = []
             msg = (
@@ -606,6 +627,9 @@ class SWEBenchService(BenchmarkService):
                     yield StreamMessageChunk(type="message", data=line)
                 break
             except SandboxCommandError:
+                break
+            except EvaluationStalled as exc:
+                stalled = exc
                 break
             except (SandboxError, RuntimeError):
                 if attempt == MAX_RETRIES - 1:
@@ -625,6 +649,13 @@ class SWEBenchService(BenchmarkService):
                 graded_output = log_file.output
         except SandboxError:
             pass
+        if stalled is not None:
+            # The harness marks a run over its time budget with this line and grades it unresolved.
+            graded_output = f"{graded_output}\n{TESTS_TIMEOUT}\n"
+            yield StreamMessageChunk(
+                type="message",
+                data=f"Evaluation stalled ({stalled}); graded as a test timeout, as the SWE-bench harness does",
+            )
 
         evaluation_result = grade_test_output(graded_output, test_spec, prediction)
 
