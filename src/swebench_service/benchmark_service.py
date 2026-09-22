@@ -37,11 +37,13 @@ from swebench.harness.test_spec.test_spec import make_test_spec
 from swebench_service import (
     DISK_PATH,
     EVAL_OUTPUT_PATH,
+    MULTIMODAL_DISK_PATH,
     create_evaluation_script,
     create_run_command,
     get_pre_install_commands,
     grade_test_output,
     load_dataset_from_disk,
+    load_multimodal_dataset_from_disk,
     load_vals_index_subset,
 )
 from swebench_service.eval_resume import MAX_PREDICTION_BYTES, EvalResumeState, load_prediction, persist_prediction
@@ -68,6 +70,11 @@ EVAL_SANDBOX_AUTO_STOP_MINUTES = 15
 IMAGE_DIGEST_OVERRIDES = {
     "scikit-learn__scikit-learn-12585": "sha256:438346134907344bb2444ac8f0764ffa90384cf9a4bcfc2b4b398ed95847308e",
 }
+MULTIMODAL_DATASET = "multimodal"
+# The Multimodal repositories run heavier suites than the Python ones: Chart.js drives
+# headless Chrome under Xvfb, p5.js drives Puppeteer, and wp-calypso runs Jest over a
+# monorepo. They get the allocation the large Verified tasks already use.
+MULTIMODAL_RESOURCES = Resources(vcpu=4, memory=8, disk=10)
 _AGENT_BASELINE_TRAP = f"""
 _record_agent_baseline() {{
     setup_status=$?
@@ -243,13 +250,15 @@ class SWEBenchService(BenchmarkService):
                     await stream_task
 
     async def load_datasets(self) -> dict[str, dict[str, Any]]:
-        """Load SWE-bench_Verified dataset from disk."""
-        if not DISK_PATH.exists():
-            raise FileNotFoundError(f"Dataset not found at {DISK_PATH}. Run 'make setup' first.")
+        """Load the SWE-bench_Verified and SWE-bench Multimodal (dev) datasets from disk."""
+        for disk_path in (DISK_PATH, MULTIMODAL_DISK_PATH):
+            if not disk_path.exists():
+                raise FileNotFoundError(f"Dataset not found at {disk_path}. Run 'make setup' first.")
 
         return {
             "default": load_dataset_from_disk(),
             "vals_index": load_vals_index_subset(),
+            MULTIMODAL_DATASET: load_multimodal_dataset_from_disk(),
         }
 
     async def retrieve_task(
@@ -259,7 +268,9 @@ class SWEBenchService(BenchmarkService):
         if not skip_validation:
             await self.validate_task_ids([task_id], dataset=dataset)
 
-        id_docker_compatible = task_id.replace("__", "_1776_")
+        # Image names are lowercase, as the harness builds them; Multimodal ids such as
+        # Automattic__wp-calypso-21409 are not.
+        id_docker_compatible = task_id.replace("__", "_1776_").lower()
         image_repository = f"swebench/sweb.eval.x86_64.{id_docker_compatible}"
         image_digest = IMAGE_DIGEST_OVERRIDES.get(task_id)
         docker_image = f"{image_repository}@{image_digest}" if image_digest else f"{image_repository}:latest"
@@ -271,6 +282,8 @@ class SWEBenchService(BenchmarkService):
         if task_id in ["scikit-learn__scikit-learn-14710", "psf__requests-2317"]:
             resources.vcpu = 4
             resources.memory = 8
+        if (dataset or "default") == MULTIMODAL_DATASET:
+            resources = MULTIMODAL_RESOURCES.model_copy()
 
         return RetrieveTaskResponse(
             source=ImageSource(image=docker_image),
