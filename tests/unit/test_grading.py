@@ -1,5 +1,6 @@
 """Dataset-driven grading: eval types, parser lookup, asset restore, and pre-install parity."""
 
+import json
 from typing import Any
 
 import httpx
@@ -320,3 +321,92 @@ class TestEchoedPrediction:
         echoed = echo_prediction(patch)
         assert echoed.text == "é" * (MAX_ECHOED_PREDICTION_BYTES // 2)
         assert echoed.truncated is True
+
+
+class TestProblemImageStaging:
+    @pytest.fixture
+    def service(self) -> SWEBenchService:
+        return SWEBenchService.__new__(SWEBenchService)
+
+    """Screenshots are staged during setup, when the sandbox still has egress.
+
+    The agent runs with its network restricted to the model gateway, so an image it cannot
+    fetch itself has to already be on disk.
+    """
+
+    @staticmethod
+    def _transport(responses: dict[str, tuple[int, bytes]]) -> httpx.MockTransport:
+        def handler(request: httpx.Request) -> httpx.Response:
+            status, body = responses.get(str(request.url), (404, b""))
+            return httpx.Response(status, content=body)
+
+        return httpx.MockTransport(handler)
+
+    async def _stage(
+        self, service: SWEBenchService, statement: str, responses: dict[str, tuple[int, bytes]], monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[dict[str, str], _FakeSandbox]:
+        transport = self._transport(responses)
+        real_client = httpx.AsyncClient
+
+        def patched_client(**kwargs: Any) -> httpx.AsyncClient:
+            return real_client(transport=transport, **kwargs)
+
+        monkeypatch.setattr("swebench_service.benchmark_service.httpx.AsyncClient", patched_client)
+        sandbox = _FakeSandbox()
+        manifest = await service._stage_problem_images(sandbox, statement)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+        return manifest, sandbox
+
+    async def test_statement_images_land_in_the_sandbox_with_a_manifest(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        url = "https://user-images.githubusercontent.com/1/shot.png"
+        png = b"\x89PNG\r\n\x1a\n" + b"x" * 32
+        statement = f"The chart renders wrong:\n\n![]({url})\n"
+
+        manifest, sandbox = await self._stage(service, statement, {url: (200, png)}, monkeypatch)
+
+        assert list(manifest) == [url]
+        local = manifest[url]
+        assert local.startswith("/problem_images/") and local.endswith(".png")
+        assert sandbox.uploads[local] == png
+        assert json.loads(sandbox.uploads["/problem_images/manifest.json"]) == manifest
+
+    async def test_an_image_that_cannot_be_fetched_is_skipped_not_fatal(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        good = "https://user-images.githubusercontent.com/1/good.png"
+        bad = "https://user-images.githubusercontent.com/2/gone.png"
+        png = b"\x89PNG\r\n\x1a\n"
+        statement = f"![]({good}) and ![]({bad})"
+
+        manifest, sandbox = await self._stage(service, statement, {good: (200, png), bad: (404, b"")}, monkeypatch)
+
+        assert list(manifest) == [good]
+        assert not any("gone" in path for path in sandbox.uploads)
+
+    async def test_urls_outside_the_image_hosts_are_ignored(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        evil = "https://example.com/shot.png"
+        statement = f"see ![]({evil}) and https://api.github.com/repos/o/r/pulls/1"
+
+        manifest, sandbox = await self._stage(service, statement, {evil: (200, b"\x89PNG\r\n\x1a\n")}, monkeypatch)
+
+        assert manifest == {}
+        assert sandbox.uploads == {}
+
+    async def test_the_extension_comes_from_the_bytes_when_the_url_has_none(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        url = "https://user-images.githubusercontent.com/1/0bd4-11eb-8a1c"  # GitHub's extensionless form
+        statement = f"![]({url})"
+
+        manifest, _ = await self._stage(service, statement, {url: (200, b"\xff\xd8\xff" + b"y" * 16)}, monkeypatch)
+
+        assert manifest[url].endswith(".jpg")
+
+    async def test_a_statement_without_images_stages_nothing(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manifest, sandbox = await self._stage(service, "plain text bug report", {}, monkeypatch)
+        assert manifest == {} and sandbox.uploads == {}
