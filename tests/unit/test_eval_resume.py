@@ -1172,3 +1172,18 @@ async def test_capture_gives_up_after_the_attempt_budget(monkeypatch: pytest.Mon
     with pytest.raises(RuntimeError, match="Failed to capture SWE-bench prediction"):
         await benchmark._capture_prediction(sandbox)  # pyright: ignore[reportPrivateUsage]
     assert sum(PREDICTION_CAPTURE_COMMAND in command for command, _ in sandbox.commands) == service_module.CAPTURE_ATTEMPTS
+
+
+async def test_capture_of_an_empty_patch_never_downloads() -> None:
+    """Daytona's streaming download raises "No file data received" on the zero-byte file an
+    agent that changed nothing leaves behind."""
+    benchmark = service()
+    sandbox = FakeSandbox(captured_prediction=b"")
+
+    async def refuse(remote_path: str) -> bytes:
+        raise SandboxError(f"No file data received for: {remote_path}")
+
+    sandbox.download_file = refuse  # type: ignore[method-assign]
+
+    assert await benchmark._capture_prediction(sandbox) == b""  # pyright: ignore[reportPrivateUsage]
+    assert sandbox.downloads == []
