@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import re
 import logging
 import shlex
 from urllib.parse import urlsplit
@@ -63,6 +64,16 @@ from swebench_service.utils import with_retry
 
 logger = logging.getLogger(__name__)
 
+_IMAGE_MAGIC = ((b"\x89PNG\r\n\x1a\n", ".png"), (b"\xff\xd8\xff", ".jpg"), (b"GIF8", ".gif"), (b"RIFF", ".webp"))
+
+
+def _image_suffix_from_bytes(payload: bytes) -> str | None:
+    """The file extension implied by the payload's magic bytes, ignoring the URL."""
+    for magic, suffix in _IMAGE_MAGIC:
+        if payload.startswith(magic):
+            return suffix
+    return None
+
 PROBLEM_STATEMENT_PATH = "/tmp/problem_statement.txt"
 PREDICTION_PATH = "/tmp/swebench-prediction.patch"
 AGENT_BASELINE_TREE_PATH = "/tmp/swebench-agent-baseline.tree"
@@ -116,6 +127,16 @@ MULTIMODAL_REPO_RESOURCES = {"carbon-design-system/carbon": Resources(vcpu=4, me
 ASSET_FETCH_TIMEOUT_SECONDS = 60.0
 ASSET_HOSTS = frozenset({"raw.githubusercontent.com"})
 MAX_ASSET_BYTES = 20 * 1024 * 1024
+# Hosts the Multimodal issues embed their screenshots on. The service fetches them during
+# setup, when the sandbox still has egress, so the agent can run with its network shut off.
+PROBLEM_IMAGE_HOSTS = frozenset(
+    {"user-images.githubusercontent.com", "raw.githubusercontent.com", "github.com", "camo.githubusercontent.com"}
+)
+PROBLEM_IMAGE_DIR = "/problem_images"
+PROBLEM_IMAGE_MANIFEST = f"{PROBLEM_IMAGE_DIR}/manifest.json"
+MAX_PROBLEM_IMAGE_BYTES = 5 * 1024 * 1024
+PROBLEM_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+_PROBLEM_IMAGE_URL = re.compile(r"https?://[^\s<>\"')\]]+", re.IGNORECASE)
 _AGENT_BASELINE_TRAP = f"""
 _record_agent_baseline() {{
     setup_status=$?
@@ -369,6 +390,10 @@ class SWEBenchService(BenchmarkService):
         await with_retry(sandbox, lambda: sandbox.upload_file(PROBLEM_STATEMENT_PATH, problem_statement.encode()))
         yield StreamMessageChunk(type="message", data="Uploaded problem statement")
 
+        staged = await self._stage_problem_images(sandbox, problem_statement)
+        if staged:
+            yield StreamMessageChunk(type="message", data=f"Staged {len(staged)} problem-statement image(s)")
+
         # Build setup script: base + repo-specific pre-install + post-setup Git baseline.
         setup_script = _build_setup_script(task)
 
@@ -550,6 +575,55 @@ class SWEBenchService(BenchmarkService):
             logger.warning("SWE-bench prediction capture attempt %d failed, retrying:\n%s", attempt, result.output)
             await asyncio.sleep(CAPTURE_RETRY_DELAY_SECONDS)
         raise AssertionError("unreachable")
+
+    async def _stage_problem_images(self, sandbox: Sandbox, problem_statement: str) -> dict[str, str]:
+        """Download the statement's screenshots into the sandbox and return {url: local path}.
+
+        The agent runs with egress restricted to the model gateway, so it cannot fetch these
+        itself; setup still has network. An image that cannot be fetched is skipped rather
+        than failing the task, matching the agent's old behaviour of dropping a bad link.
+        """
+        urls: list[str] = []
+        for match in _PROBLEM_IMAGE_URL.finditer(problem_statement or ""):
+            url = match.group(0).rstrip(").,")
+            parts = urlsplit(url)
+            if parts.hostname not in PROBLEM_IMAGE_HOSTS:
+                continue
+            looks_like_image = parts.path.lower().endswith(PROBLEM_IMAGE_EXTENSIONS)
+            if not looks_like_image and parts.hostname != "user-images.githubusercontent.com":
+                continue
+            if url not in urls:
+                urls.append(url)
+        if not urls:
+            return {}
+
+        manifest: dict[str, str] = {}
+        async with httpx.AsyncClient(timeout=ASSET_FETCH_TIMEOUT_SECONDS, follow_redirects=True) as client:
+            for url in urls:
+                try:
+                    async with client.stream("GET", url) as response:
+                        response.raise_for_status()
+                        data = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            data.extend(chunk)
+                            if len(data) > MAX_PROBLEM_IMAGE_BYTES:
+                                raise RuntimeError("image exceeds the size limit")
+                except (httpx.HTTPError, RuntimeError) as exc:
+                    logger.warning("Skipping problem-statement image %s: %s", url, exc)
+                    continue
+                payload = bytes(data)
+                suffix = Path(urlsplit(url).path).suffix.lower()
+                if suffix not in PROBLEM_IMAGE_EXTENSIONS:
+                    suffix = _image_suffix_from_bytes(payload) or ".png"
+                path = f"{PROBLEM_IMAGE_DIR}/{hashlib.sha256(url.encode()).hexdigest()[:32]}{suffix}"
+                await with_retry(sandbox, lambda: sandbox.upload_file(path, payload))
+                manifest[url] = path
+        if manifest:
+            await with_retry(
+                sandbox,
+                lambda: sandbox.upload_file(PROBLEM_IMAGE_MANIFEST, json.dumps(manifest, indent=1).encode()),
+            )
+        return manifest
 
     async def _stage_image_assets(self, sandbox: Sandbox, test_spec: TestSpec) -> list[str]:
         """Upload the binary assets the test patch needs and return the lines that restore them.
