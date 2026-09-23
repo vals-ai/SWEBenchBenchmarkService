@@ -1175,11 +1175,8 @@ async def test_capture_gives_up_after_the_attempt_budget(monkeypatch: pytest.Mon
 
 
 async def test_capture_of_an_empty_patch_never_downloads() -> None:
-    """An agent that changed nothing yields a zero-length capture file.
-
-    Daytona's streaming download reports a zero-length file as "No file data received" and
-    raises, so a legitimate empty result failed the task instead of grading as unresolved.
-    """
+    """Daytona's streaming download raises "No file data received" on the zero-byte file an
+    agent that changed nothing leaves behind."""
     benchmark = service()
     sandbox = FakeSandbox(captured_prediction=b"")
 
