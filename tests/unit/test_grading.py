@@ -360,7 +360,11 @@ class TestProblemImageStaging:
     @staticmethod
     def _transport(responses: "dict[str, _MockResponse]") -> httpx.MockTransport:
         def handler(request: httpx.Request) -> httpx.Response:
-            entry = responses.get(str(request.url))
+            # The fetch connects to a checked address, so the request URL holds that address
+            # and the name it stands for is in the Host header.
+            host = request.headers.get("Host") or request.url.netloc.decode()
+            path = request.url.raw_path.decode()
+            entry = responses.get(f"{request.url.scheme}://{host}{path}")
             if entry is None:
                 return httpx.Response(404, content=b"<html>not found</html>")
             status, body = entry[0], entry[1]
@@ -467,6 +471,22 @@ class TestProblemImageStaging:
         assert unstaged == []
         assert manifest[url].endswith(".svg")
 
+    async def test_the_served_type_wins_over_the_link_extension(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A .png link answering with SVG must not be stored as a PNG."""
+        url = "https://images.example.org/preview.png"
+
+        manifest, unstaged, _ = await self._stage(
+            service,
+            [url],
+            {url: (200, b"<svg xmlns='http://www.w3.org/2000/svg'/>", {"content-type": "image/svg+xml"})},
+            monkeypatch,
+        )
+
+        assert unstaged == []
+        assert manifest[url].endswith(".svg")
+
     async def test_the_extension_comes_from_the_bytes_when_the_url_has_none(
         self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -551,6 +571,41 @@ class TestProblemImageStaging:
         manifest, unstaged, _ = await self._stage(service, [url], {url: (200, self.PNG)}, monkeypatch)
 
         assert manifest == {} and unstaged == [url]
+
+    async def test_the_fetch_connects_to_the_address_that_was_checked(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Connecting by name would resolve it a second time, so a host that answers
+        publicly for the check could answer privately for the fetch."""
+        url = "https://rebind.example/shot.png"
+        seen: list[str] = []
+
+        async def resolve(host: str, port: int) -> list[Any]:
+            return [ipaddress.ip_address("93.184.216.34")]
+
+        monkeypatch.setattr("swebench_service.benchmark_service._resolve_addresses", resolve)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url))
+            assert request.headers["Host"] == "rebind.example"
+            assert request.extensions.get("sni_hostname") == "rebind.example"
+            return httpx.Response(200, content=self.PNG)
+
+        real_client = httpx.AsyncClient
+
+        def patched_client(**kwargs: Any) -> httpx.AsyncClient:
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        monkeypatch.setattr("swebench_service.benchmark_service.httpx.AsyncClient", patched_client)
+        sandbox = _FakeSandbox()
+        manifest, unstaged = await service._stage_problem_images(  # pyright: ignore[reportPrivateUsage]
+            sandbox,  # pyright: ignore[reportArgumentType]
+            {"image_assets": {"problem_statement": [url]}},
+        )
+
+        assert unstaged == []
+        assert list(manifest) == [url]
+        assert seen == ["https://93.184.216.34/shot.png"]
 
     async def test_a_redirect_into_our_network_is_refused(
         self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch

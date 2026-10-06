@@ -9,7 +9,7 @@ import re
 import logging
 import shlex
 import socket
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, cast
@@ -89,15 +89,13 @@ async def _resolve_addresses(host: str, port: int) -> list[ipaddress.IPv4Address
     return [ipaddress.ip_address(info[4][0]) for info in resolved]
 
 
-async def _reject_unfetchable_image_url(url: str) -> None:
-    """Refuse a screenshot URL the service should not be making a request to.
+async def _public_addresses_for(url: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """The addresses a screenshot URL may be fetched from, or refuse the URL.
 
     The URL list comes from an external dataset, so this is what stops a revision pointing
     the service at a link-local metadata endpoint or something on its own network. Every
-    address the host resolves to has to be public, because a name can hold several.
-
-    A host that re-resolves between this check and the connection is not covered; the
-    dataset revision is pinned and reviewed, which is what bounds that.
+    address the host resolves to has to be public, because a name can hold several, and the
+    caller connects to one of these rather than resolving the name a second time.
     """
     parts = urlsplit(url)
     if parts.scheme != "https":
@@ -106,9 +104,18 @@ async def _reject_unfetchable_image_url(url: str) -> None:
     if not host:
         raise ValueError(f"no host in URL: {url}")
 
-    for address in await _resolve_addresses(host, parts.port or 443):
+    addresses = await _resolve_addresses(host, parts.port or 443)
+    for address in addresses:
         if not address.is_global or address.is_multicast:
             raise RuntimeError(f"{host} resolves to the non-public address {address}")
+    return addresses
+
+
+def _pinned_url(parts: SplitResult, address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    """The same URL addressed to one checked IP, so the name cannot resolve again."""
+    literal = f"[{address}]" if address.version == 6 else str(address)
+    authority = f"{literal}:{parts.port}" if parts.port else literal
+    return urlunsplit((parts.scheme, authority, parts.path, parts.query, ""))
 
 
 _GITHUB_BLOB = re.compile(r"^https://github\.com/([^/]+/[^/]+)/blob/(.+)$", re.IGNORECASE)
@@ -139,12 +146,13 @@ def _problem_image_suffix(url: str, payload: bytes, content_type: str) -> str:
         return from_bytes
     if not content_type.startswith(PROBLEM_IMAGE_CONTENT_TYPES):
         raise RuntimeError(f"served {content_type or 'no content type'}, not an image")
-    suffix = Path(urlsplit(url).path).suffix.lower()
-    if suffix in PROBLEM_IMAGE_EXTENSIONS:
-        return suffix
-    # `image/svg+xml` -> `.svg`; a declared image type we have no magic for is still an image.
+    # The served type describes the bytes; the link's extension only describes the link, and
+    # a .png URL answering with SVG would otherwise be stored under the wrong encoding.
     declared = content_type.split("/", 1)[1].split("+")[0]
-    return f".{declared}" if declared.isalnum() else ".png"
+    if declared.isalnum():
+        return f".{declared}"
+    suffix = Path(urlsplit(url).path).suffix.lower()
+    return suffix if suffix in PROBLEM_IMAGE_EXTENSIONS else ".png"
 
 PROBLEM_STATEMENT_PATH = "/tmp/problem_statement.txt"
 PREDICTION_PATH = "/tmp/swebench-prediction.patch"
@@ -763,13 +771,14 @@ class SWEBenchService(BenchmarkService):
         """Fetch one screenshot, checking every redirect hop, and return its bytes and suffix."""
         url = _raw_github_url(url)
         for _ in range(PROBLEM_IMAGE_REDIRECT_LIMIT + 1):
-            await _reject_unfetchable_image_url(url)
-            async with client.stream("GET", url) as response:
+            response = await self._get_from_a_checked_address(client, url)
+            try:
                 if response.is_redirect:
                     location = response.headers.get("location")
                     if not location:
                         raise RuntimeError("redirected without a location")
-                    url = str(response.url.join(location))
+                    # Resolved against the real URL, not the address it was fetched from.
+                    url = str(httpx.URL(url).join(location))
                     continue
                 response.raise_for_status()
                 content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
@@ -780,7 +789,29 @@ class SWEBenchService(BenchmarkService):
                         raise RuntimeError(f"image exceeds {MAX_PROBLEM_IMAGE_BYTES} bytes")
                 payload = bytes(data)
                 return payload, _problem_image_suffix(url, payload, content_type)
+            finally:
+                await response.aclose()
         raise RuntimeError(f"more than {PROBLEM_IMAGE_REDIRECT_LIMIT} redirects")
+
+    async def _get_from_a_checked_address(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
+        """Request `url` from an address that was checked, not from a second name lookup.
+
+        Connecting by name would resolve it again, so a host that answered publicly for the
+        check could answer privately for the fetch. The certificate is still validated
+        against the real hostname, which is sent as SNI and as the Host header.
+        """
+        addresses = await _public_addresses_for(url)
+        parts = urlsplit(url)
+        last_error: Exception | None = None
+        for address in addresses:
+            request = client.build_request("GET", _pinned_url(parts, address), headers={"Host": parts.netloc})
+            request.extensions["sni_hostname"] = parts.hostname
+            try:
+                return await client.send(request, stream=True)
+            except httpx.TransportError as error:
+                # A host can publish an address family this machine cannot route.
+                last_error = error
+        raise last_error or RuntimeError(f"no usable address for {url}")
 
     async def _stage_image_assets(self, sandbox: Sandbox, test_spec: TestSpec) -> list[str]:
         """Upload the binary assets the test patch needs and return the lines that restore them.
