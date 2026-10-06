@@ -1,5 +1,6 @@
 """Dataset-driven grading: eval types, parser lookup, asset restore, and pre-install parity."""
 
+import ipaddress
 import json
 from typing import Any
 
@@ -19,7 +20,7 @@ from swebench_service import (
     test_patch_assets as patch_assets,
     trim_log_preamble,
 )
-from swebench_service.benchmark_service import SWEBenchService
+from swebench_service.benchmark_service import MAX_PROBLEM_IMAGE_BYTES, SWEBenchService
 from swebench_service.evaluation import MAX_ECHOED_PREDICTION_BYTES, echo_prediction
 
 
@@ -323,28 +324,62 @@ class TestEchoedPrediction:
         assert echoed.truncated is True
 
 
+_MockResponse = tuple[int, bytes] | tuple[int, bytes, dict[str, str]]
+
+
 class TestProblemImageStaging:
+    """Screenshots are staged during setup, when the sandbox still has egress.
+
+    The agent runs with its network restricted to the model gateway, so an image it cannot
+    fetch itself has to already be on disk. The URLs come from the dataset's own
+    `image_assets.problem_statement`, which is the list upstream SWE-agent stages.
+    """
+
+    PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 32
+    JPG = b"\xff\xd8\xff" + b"y" * 16
+
     @pytest.fixture
     def service(self) -> SWEBenchService:
         return SWEBenchService.__new__(SWEBenchService)
 
-    """Screenshots are staged during setup, when the sandbox still has egress.
-
-    The agent runs with its network restricted to the model gateway, so an image it cannot
-    fetch itself has to already be on disk.
-    """
+    @pytest.fixture(autouse=True)
+    def public_dns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Resolve every test host to a public address unless a test says otherwise."""
+        monkeypatch.setattr(
+            "swebench_service.benchmark_service._resolve_addresses",
+            self._resolver({}),
+        )
 
     @staticmethod
-    def _transport(responses: dict[str, tuple[int, bytes]]) -> httpx.MockTransport:
+    def _resolver(overrides: dict[str, str], default: str = "93.184.216.34") -> Any:
+        async def resolve(host: str, port: int) -> list[Any]:
+            return [ipaddress.ip_address(overrides.get(host, default))]
+
+        return resolve
+
+    @staticmethod
+    def _transport(responses: "dict[str, _MockResponse]") -> httpx.MockTransport:
         def handler(request: httpx.Request) -> httpx.Response:
-            status, body = responses.get(str(request.url), (404, b""))
-            return httpx.Response(status, content=body)
+            # The fetch connects to a checked address, so the request URL holds that address
+            # and the name it stands for is in the Host header.
+            host = request.headers.get("Host") or request.url.netloc.decode()
+            path = request.url.raw_path.decode()
+            entry = responses.get(f"{request.url.scheme}://{host}{path}")
+            if entry is None:
+                return httpx.Response(404, content=b"<html>not found</html>")
+            status, body = entry[0], entry[1]
+            headers: dict[str, str] = entry[2] if len(entry) == 3 else {}
+            return httpx.Response(status, content=body, headers=headers)
 
         return httpx.MockTransport(handler)
 
     async def _stage(
-        self, service: SWEBenchService, statement: str, responses: dict[str, tuple[int, bytes]], monkeypatch: pytest.MonkeyPatch
-    ) -> tuple[dict[str, str], _FakeSandbox]:
+        self,
+        service: SWEBenchService,
+        urls: list[str],
+        responses: "dict[str, _MockResponse]",
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[dict[str, str], list[str], _FakeSandbox]:
         transport = self._transport(responses)
         real_client = httpx.AsyncClient
 
@@ -353,60 +388,284 @@ class TestProblemImageStaging:
 
         monkeypatch.setattr("swebench_service.benchmark_service.httpx.AsyncClient", patched_client)
         sandbox = _FakeSandbox()
-        manifest = await service._stage_problem_images(sandbox, statement)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
-        return manifest, sandbox
+        task = {"image_assets": {"problem_statement": urls}}
+        manifest, unstaged = await service._stage_problem_images(sandbox, task)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+        return manifest, unstaged, sandbox
 
-    async def test_statement_images_land_in_the_sandbox_with_a_manifest(
+    async def test_declared_images_land_in_the_sandbox_with_a_manifest(
         self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         url = "https://user-images.githubusercontent.com/1/shot.png"
-        png = b"\x89PNG\r\n\x1a\n" + b"x" * 32
-        statement = f"The chart renders wrong:\n\n![]({url})\n"
 
-        manifest, sandbox = await self._stage(service, statement, {url: (200, png)}, monkeypatch)
+        manifest, unstaged, sandbox = await self._stage(service, [url], {url: (200, self.PNG)}, monkeypatch)
 
         assert list(manifest) == [url]
+        assert unstaged == []
         local = manifest[url]
         assert local.startswith("/problem_images/") and local.endswith(".png")
-        assert sandbox.uploads[local] == png
+        assert sandbox.uploads[local] == self.PNG
         assert json.loads(sandbox.uploads["/problem_images/manifest.json"]) == manifest
 
-    async def test_an_image_that_cannot_be_fetched_is_skipped_not_fatal(
+    async def test_any_host_the_dataset_lists_is_staged(
         self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Reporters embed screenshots wherever they like; an allowlist of GitHub CDNs blinded
+        the agent on 32 tasks whose images live on Alibaba OSS or GitHub's older CDN."""
+        urls = [
+            "https://cloud.githubusercontent.com/assets/1/old.png",
+            "https://fusion-image.oss-cn-beijing.aliyuncs.com/shot.png",
+            "https://img.alicdn.com/tfs/shot.png",
+            "https://guoxicheng.top/images/shot.png",
+        ]
+
+        manifest, unstaged, _ = await self._stage(
+            service, urls, {url: (200, self.PNG) for url in urls}, monkeypatch
+        )
+
+        assert list(manifest) == urls
+        assert unstaged == []
+
+    async def test_an_image_that_cannot_be_fetched_is_reported_not_fatal(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Some of these links have been dead for years; upstream drops them too."""
         good = "https://user-images.githubusercontent.com/1/good.png"
         bad = "https://user-images.githubusercontent.com/2/gone.png"
-        png = b"\x89PNG\r\n\x1a\n"
-        statement = f"![]({good}) and ![]({bad})"
 
-        manifest, sandbox = await self._stage(service, statement, {good: (200, png), bad: (404, b"")}, monkeypatch)
+        manifest, unstaged, sandbox = await self._stage(
+            service, [good, bad], {good: (200, self.PNG), bad: (404, b"")}, monkeypatch
+        )
 
         assert list(manifest) == [good]
+        assert unstaged == [bad]
         assert not any("gone" in path for path in sandbox.uploads)
 
-    async def test_urls_outside_the_image_hosts_are_ignored(
+    async def test_a_page_that_is_not_an_image_is_refused(
         self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        evil = "https://example.com/shot.png"
-        statement = f"see ![]({evil}) and https://api.github.com/repos/o/r/pulls/1"
+        """A dead link often answers 200 with HTML, and a tile API answers text/plain."""
+        url = "https://tile.nextzen.org/tile/1/2/3.png"
 
-        manifest, sandbox = await self._stage(service, statement, {evil: (200, b"\x89PNG\r\n\x1a\n")}, monkeypatch)
+        manifest, unstaged, _ = await self._stage(
+            service,
+            [url],
+            {url: (200, b"<html>gone</html>", {"content-type": "text/html"})},
+            monkeypatch,
+        )
 
         assert manifest == {}
-        assert sandbox.uploads == {}
+        assert unstaged == [url]
+
+    async def test_an_image_type_with_no_magic_bytes_is_kept(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        url = "https://example.org/diagram.svg"
+
+        manifest, unstaged, _ = await self._stage(
+            service,
+            [url],
+            {url: (200, b"<svg xmlns='http://www.w3.org/2000/svg'/>", {"content-type": "image/svg+xml"})},
+            monkeypatch,
+        )
+
+        assert unstaged == []
+        assert manifest[url].endswith(".svg")
+
+    async def test_the_served_type_wins_over_the_link_extension(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A .png link answering with SVG must not be stored as a PNG."""
+        url = "https://images.example.org/preview.png"
+
+        manifest, unstaged, _ = await self._stage(
+            service,
+            [url],
+            {url: (200, b"<svg xmlns='http://www.w3.org/2000/svg'/>", {"content-type": "image/svg+xml"})},
+            monkeypatch,
+        )
+
+        assert unstaged == []
+        assert manifest[url].endswith(".svg")
 
     async def test_the_extension_comes_from_the_bytes_when_the_url_has_none(
         self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         url = "https://user-images.githubusercontent.com/1/0bd4-11eb-8a1c"  # GitHub's extensionless form
-        statement = f"![]({url})"
 
-        manifest, _ = await self._stage(service, statement, {url: (200, b"\xff\xd8\xff" + b"y" * 16)}, monkeypatch)
+        manifest, _, _ = await self._stage(service, [url], {url: (200, self.JPG)}, monkeypatch)
 
         assert manifest[url].endswith(".jpg")
 
-    async def test_a_statement_without_images_stages_nothing(
+    async def test_a_task_with_no_declared_images_stages_nothing(
         self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        manifest, sandbox = await self._stage(service, "plain text bug report", {}, monkeypatch)
-        assert manifest == {} and sandbox.uploads == {}
+        manifest, unstaged, sandbox = await self._stage(service, [], {}, monkeypatch)
+        assert manifest == {} and unstaged == [] and sandbox.uploads == {}
+
+    async def test_the_same_image_twice_is_fetched_once(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        url = "https://user-images.githubusercontent.com/1/shot.png"
+        manifest, _, _ = await self._stage(service, [url, url], {url: (200, self.PNG)}, monkeypatch)
+        assert list(manifest) == [url]
+
+    async def test_a_github_blob_link_fetches_the_file_not_the_page(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A statement that links a screenshot by its repository page used to stage 230 KB of
+        HTML under a .png name; the agent then dropped it for having the wrong magic bytes."""
+        blob = "https://github.com/o/r/blob/master/Reference/A.4.1.png"
+        raw = "https://raw.githubusercontent.com/o/r/master/Reference/A.4.1.png"
+
+        manifest, unstaged, sandbox = await self._stage(
+            service,
+            [blob],
+            {blob: (200, b"<html>page</html>", {"content-type": "text/html"}), raw: (200, self.PNG)},
+            monkeypatch,
+        )
+
+        assert unstaged == []
+        # The statement references the blob URL, so that is what the agent looks up.
+        assert list(manifest) == [blob]
+        assert sandbox.uploads[manifest[blob]] == self.PNG
+
+    # --- what the host allowlist used to be standing in for ---------------------------------
+
+    async def test_a_plain_http_url_is_refused(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        url = "http://user-images.githubusercontent.com/1/shot.png"
+        manifest, unstaged, _ = await self._stage(service, [url], {url: (200, self.PNG)}, monkeypatch)
+        assert manifest == {} and unstaged == [url]
+
+    @pytest.mark.parametrize(
+        "address",
+        ["127.0.0.1", "169.254.169.254", "10.0.0.5", "192.168.1.1", "::1", "fd00::1"],
+    )
+    async def test_a_host_on_our_own_network_is_refused(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch, address: str
+    ) -> None:
+        """The URL list comes from an external dataset, so this is the control that keeps a
+        revision from pointing the service at a metadata endpoint or an internal service."""
+        url = "https://metadata.example/shot.png"
+        monkeypatch.setattr(
+            "swebench_service.benchmark_service._resolve_addresses",
+            self._resolver({"metadata.example": address}),
+        )
+
+        manifest, unstaged, _ = await self._stage(service, [url], {url: (200, self.PNG)}, monkeypatch)
+
+        assert manifest == {} and unstaged == [url]
+
+    async def test_a_host_is_refused_when_any_of_its_addresses_is_private(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A name can hold several records, so one public answer is not enough."""
+        url = "https://split.example/shot.png"
+
+        async def resolve(host: str, port: int) -> list[Any]:
+            return [ipaddress.ip_address("93.184.216.34"), ipaddress.ip_address("169.254.169.254")]
+
+        monkeypatch.setattr("swebench_service.benchmark_service._resolve_addresses", resolve)
+
+        manifest, unstaged, _ = await self._stage(service, [url], {url: (200, self.PNG)}, monkeypatch)
+
+        assert manifest == {} and unstaged == [url]
+
+    async def test_the_fetch_connects_to_the_address_that_was_checked(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Connecting by name would resolve it a second time, so a host that answers
+        publicly for the check could answer privately for the fetch."""
+        url = "https://rebind.example/shot.png"
+        seen: list[str] = []
+
+        async def resolve(host: str, port: int) -> list[Any]:
+            return [ipaddress.ip_address("93.184.216.34")]
+
+        monkeypatch.setattr("swebench_service.benchmark_service._resolve_addresses", resolve)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(str(request.url))
+            assert request.headers["Host"] == "rebind.example"
+            assert request.extensions.get("sni_hostname") == "rebind.example"
+            return httpx.Response(200, content=self.PNG)
+
+        real_client = httpx.AsyncClient
+
+        def patched_client(**kwargs: Any) -> httpx.AsyncClient:
+            return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+        monkeypatch.setattr("swebench_service.benchmark_service.httpx.AsyncClient", patched_client)
+        sandbox = _FakeSandbox()
+        manifest, unstaged = await service._stage_problem_images(  # pyright: ignore[reportPrivateUsage]
+            sandbox,  # pyright: ignore[reportArgumentType]
+            {"image_assets": {"problem_statement": [url]}},
+        )
+
+        assert unstaged == []
+        assert list(manifest) == [url]
+        assert seen == ["https://93.184.216.34/shot.png"]
+
+    async def test_a_redirect_into_our_network_is_refused(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The old fetch followed redirects blindly, so an allowed host could hand the service
+        any destination it liked; every hop is checked now."""
+        url = "https://user-images.githubusercontent.com/1/shot.png"
+        inside = "https://metadata.example/secret"
+        monkeypatch.setattr(
+            "swebench_service.benchmark_service._resolve_addresses",
+            self._resolver({"metadata.example": "169.254.169.254"}),
+        )
+
+        manifest, unstaged, _ = await self._stage(
+            service,
+            [url],
+            {url: (302, b"", {"location": inside}), inside: (200, self.PNG)},
+            monkeypatch,
+        )
+
+        assert manifest == {} and unstaged == [url]
+
+    async def test_a_redirect_to_another_public_host_is_followed(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """GitHub's camo and the OSS CDNs redirect in normal operation."""
+        url = "https://github.com/o/r/assets/1"
+        final = "https://objects.githubusercontent.com/shot.png"
+
+        manifest, unstaged, _ = await self._stage(
+            service,
+            [url],
+            {url: (302, b"", {"location": final}), final: (200, self.PNG)},
+            monkeypatch,
+        )
+
+        assert unstaged == []
+        assert list(manifest) == [url]
+
+    async def test_a_redirect_loop_gives_up(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        a = "https://example.org/a.png"
+        b = "https://example.org/b.png"
+
+        manifest, unstaged, _ = await self._stage(
+            service,
+            [a],
+            {a: (302, b"", {"location": b}), b: (302, b"", {"location": a})},
+            monkeypatch,
+        )
+
+        assert manifest == {} and unstaged == [a]
+
+    async def test_an_oversized_image_is_refused(
+        self, service: SWEBenchService, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        url = "https://example.org/huge.png"
+        body = b"\x89PNG\r\n\x1a\n" + b"x" * (MAX_PROBLEM_IMAGE_BYTES + 1)
+
+        manifest, unstaged, _ = await self._stage(service, [url], {url: (200, body)}, monkeypatch)
+
+        assert manifest == {} and unstaged == [url]

@@ -2,12 +2,14 @@
 
 import asyncio
 import contextlib
+import ipaddress
 import hashlib
 import json
 import re
 import logging
 import shlex
-from urllib.parse import urlsplit
+import socket
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, cast
@@ -74,6 +76,84 @@ def _image_suffix_from_bytes(payload: bytes) -> str | None:
             return suffix
     return None
 
+
+async def _resolve_addresses(host: str, port: int) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Every address `host` resolves to, so the caller can check all of them."""
+    loop = asyncio.get_running_loop()
+    try:
+        resolved = await loop.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise RuntimeError(f"could not resolve {host}: {exc}") from exc
+    if not resolved:
+        raise RuntimeError(f"could not resolve {host}")
+    return [ipaddress.ip_address(info[4][0]) for info in resolved]
+
+
+async def _public_addresses_for(url: str) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """The addresses a screenshot URL may be fetched from, or refuse the URL.
+
+    The URL list comes from an external dataset, so this is what stops a revision pointing
+    the service at a link-local metadata endpoint or something on its own network. Every
+    address the host resolves to has to be public, because a name can hold several, and the
+    caller connects to one of these rather than resolving the name a second time.
+    """
+    parts = urlsplit(url)
+    if parts.scheme != "https":
+        raise ValueError(f"not an https URL: {url}")
+    host = parts.hostname
+    if not host:
+        raise ValueError(f"no host in URL: {url}")
+
+    addresses = await _resolve_addresses(host, parts.port or 443)
+    for address in addresses:
+        if not address.is_global or address.is_multicast:
+            raise RuntimeError(f"{host} resolves to the non-public address {address}")
+    return addresses
+
+
+def _pinned_url(parts: SplitResult, address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    """The same URL addressed to one checked IP, so the name cannot resolve again."""
+    literal = f"[{address}]" if address.version == 6 else str(address)
+    authority = f"{literal}:{parts.port}" if parts.port else literal
+    return urlunsplit((parts.scheme, authority, parts.path, parts.query, ""))
+
+
+_GITHUB_BLOB = re.compile(r"^https://github\.com/([^/]+/[^/]+)/blob/(.+)$", re.IGNORECASE)
+
+
+def _raw_github_url(url: str) -> str:
+    """Point a github.com blob link at the file instead of the page that renders it.
+
+    A statement that links a screenshot by its repository page gets 230 KB of HTML from
+    that URL, not the image. The manifest still keys on the URL the statement used, so
+    the agent can still find it in the text.
+    """
+    match = _GITHUB_BLOB.match(url)
+    if not match:
+        return url
+    repository, path = match.groups()
+    return f"https://raw.githubusercontent.com/{repository}/{path}"
+
+
+def _problem_image_suffix(url: str, payload: bytes, content_type: str) -> str:
+    """The suffix to store a screenshot under, rejecting anything that is not an image.
+
+    A dead link usually answers 200 with an HTML page, so the payload has to look like an
+    image by magic bytes or be declared as one; the URL's extension alone is not evidence.
+    """
+    from_bytes = _image_suffix_from_bytes(payload)
+    if from_bytes is not None:
+        return from_bytes
+    if not content_type.startswith(PROBLEM_IMAGE_CONTENT_TYPES):
+        raise RuntimeError(f"served {content_type or 'no content type'}, not an image")
+    # The served type describes the bytes; the link's extension only describes the link, and
+    # a .png URL answering with SVG would otherwise be stored under the wrong encoding.
+    declared = content_type.split("/", 1)[1].split("+")[0]
+    if declared.isalnum():
+        return f".{declared}"
+    suffix = Path(urlsplit(url).path).suffix.lower()
+    return suffix if suffix in PROBLEM_IMAGE_EXTENSIONS else ".png"
+
 PROBLEM_STATEMENT_PATH = "/tmp/problem_statement.txt"
 PREDICTION_PATH = "/tmp/swebench-prediction.patch"
 AGENT_BASELINE_TREE_PATH = "/tmp/swebench-agent-baseline.tree"
@@ -114,6 +194,66 @@ IMAGE_DIGEST_OVERRIDES = {
 MULTIMODAL_DATASET = "multimodal"
 MULTIMODAL_DEV_DATASET = "multimodal_dev"
 MULTIMODAL_DATASETS = frozenset({MULTIMODAL_DATASET, MULTIMODAL_DEV_DATASET})
+VALS_INDEX_DATASET = "vals_index"
+DATASET_LOADERS: dict[str, Any] = {
+    "default": load_dataset_from_disk,
+    VALS_INDEX_DATASET: load_vals_index_subset,
+    MULTIMODAL_DATASET: load_multimodal_dataset_from_disk,
+    MULTIMODAL_DEV_DATASET: load_multimodal_dev_dataset_from_disk,
+}
+
+VALS_FORMAT_SCORE_TYPES = {
+    "score": {
+        "unit": "percent",
+        "description": "Percentage of submitted instances whose patch resolves the issue.",
+    },
+}
+
+
+def _vals_format_score(value: float) -> dict[str, Any]:
+    """Uncertainty is left to the export, which measures it across runs of the same model."""
+    return {"value": value, "stderr": None, "extra": {}}
+
+
+def _vals_format_population(
+    members: list[str], resolved: set[str], selection: list[str] | None = None
+) -> dict[str, Any]:
+    resolved_count = sum(1 for task_id in members if task_id in resolved)
+    total = len(members)
+    return {
+        "scores": {"score": _vals_format_score(round(resolved_count / total * 100, 6) if total else 0.0)},
+        "counts": {
+            "total": total,
+            "by_status": {"resolved": resolved_count, "unresolved": total - resolved_count},
+            "extra": {},
+        },
+        "selection": None
+        if selection is None
+        else {
+            "type": "dataset_subset",
+            "criteria": {
+                "task_ids": selection,
+                "tags": [VALS_INDEX_DATASET],
+                "categories": [],
+                "operators": [],
+                "extra": {"dataset": VALS_INDEX_DATASET},
+            },
+            "extra": {},
+        },
+        "aggregated_metrics": {"total": {}, "average_per_task": {}},
+        "extra": {},
+    }
+
+
+def _vals_format_task(task_id: str, resolved: bool) -> dict[str, Any]:
+    return {
+        "task_id": task_id,
+        "status": "resolved" if resolved else "unresolved",
+        "scores": {"score": _vals_format_score(100.0 if resolved else 0.0)},
+        "evaluations": [],
+        "retries": [],
+        "extra": {},
+    }
 # The Multimodal repositories run heavier suites than the Python ones: browser suites under
 # Xvfb (Chart.js, openlayers, lighthouse), Puppeteer, and Jest over monorepos. They get the
 # allocation the large Verified tasks already use.
@@ -127,16 +267,19 @@ MULTIMODAL_REPO_RESOURCES = {"carbon-design-system/carbon": Resources(vcpu=4, me
 ASSET_FETCH_TIMEOUT_SECONDS = 60.0
 ASSET_HOSTS = frozenset({"raw.githubusercontent.com"})
 MAX_ASSET_BYTES = 20 * 1024 * 1024
-# Hosts the Multimodal issues embed their screenshots on. The service fetches them during
-# setup, when the sandbox still has egress, so the agent can run with its network shut off.
-PROBLEM_IMAGE_HOSTS = frozenset(
-    {"user-images.githubusercontent.com", "raw.githubusercontent.com", "github.com", "camo.githubusercontent.com"}
-)
+# The Multimodal issues embed their screenshots on whatever host the reporter used: GitHub's
+# CDNs, but also Alibaba OSS for alibaba-fusion and a tail of personal sites. The service
+# fetches them during setup, when the sandbox still has egress, so the agent can run with its
+# network shut off. A host allowlist cannot cover that tail without being rewritten for every
+# dataset revision, so the fetch is bounded by what it is actually guarding against: the URL
+# list comes from an external dataset, so each hop must be https, must resolve to a public
+# address, and must return something that is actually an image, under a size cap.
 PROBLEM_IMAGE_DIR = "/problem_images"
 PROBLEM_IMAGE_MANIFEST = f"{PROBLEM_IMAGE_DIR}/manifest.json"
 MAX_PROBLEM_IMAGE_BYTES = 5 * 1024 * 1024
 PROBLEM_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp")
-_PROBLEM_IMAGE_URL = re.compile(r"https?://[^\s<>\"')\]]+", re.IGNORECASE)
+PROBLEM_IMAGE_REDIRECT_LIMIT = 5
+PROBLEM_IMAGE_CONTENT_TYPES = ("image/",)
 _AGENT_BASELINE_TRAP = f"""
 _record_agent_baseline() {{
     setup_status=$?
@@ -390,9 +533,19 @@ class SWEBenchService(BenchmarkService):
         await with_retry(sandbox, lambda: sandbox.upload_file(PROBLEM_STATEMENT_PATH, problem_statement.encode()))
         yield StreamMessageChunk(type="message", data="Uploaded problem statement")
 
-        staged = await self._stage_problem_images(sandbox, problem_statement)
-        if staged:
-            yield StreamMessageChunk(type="message", data=f"Staged {len(staged)} problem-statement image(s)")
+        staged, unstaged = await self._stage_problem_images(sandbox, task)
+        if staged or unstaged:
+            yield StreamMessageChunk(
+                type="message",
+                data=f"Staged {len(staged)} of {len(staged) + len(unstaged)} problem-statement image(s)",
+            )
+        if unstaged:
+            # The task still runs, as upstream does with a dead link, but a screenshot the
+            # model never saw has to be visible in the task log rather than only in ours.
+            yield StreamMessageChunk(
+                type="message",
+                data=f"Could not stage {len(unstaged)} problem-statement image(s): {', '.join(unstaged)}",
+            )
 
         # Build setup script: base + repo-specific pre-install + post-setup Git baseline.
         setup_script = _build_setup_script(task)
@@ -576,45 +729,34 @@ class SWEBenchService(BenchmarkService):
             await asyncio.sleep(CAPTURE_RETRY_DELAY_SECONDS)
         raise AssertionError("unreachable")
 
-    async def _stage_problem_images(self, sandbox: Sandbox, problem_statement: str) -> dict[str, str]:
-        """Download the statement's screenshots into the sandbox and return {url: local path}.
+    async def _stage_problem_images(self, sandbox: Sandbox, task: dict[str, Any]) -> tuple[dict[str, str], list[str]]:
+        """Download the task's screenshots into the sandbox; return {url: path} and what failed.
+
+        The URLs come from the dataset's own `image_assets.problem_statement`, which is what
+        upstream SWE-agent stages, rather than from scraping the rendered statement: the
+        column is authoritative and lists images a scrape's extension test would miss.
 
         The agent runs with egress restricted to the model gateway, so it cannot fetch these
-        itself; setup still has network. An image that cannot be fetched is skipped rather
-        than failing the task, matching the agent's old behaviour of dropping a bad link.
+        itself; setup still has network. A screenshot that cannot be fetched is skipped rather
+        than failing the task -- some of these links have been dead for years, and upstream
+        drops them too -- but it is returned so the caller can report the loss.
         """
-        urls: list[str] = []
-        for match in _PROBLEM_IMAGE_URL.finditer(problem_statement or ""):
-            url = match.group(0).rstrip(").,")
-            parts = urlsplit(url)
-            if parts.hostname not in PROBLEM_IMAGE_HOSTS:
-                continue
-            looks_like_image = parts.path.lower().endswith(PROBLEM_IMAGE_EXTENSIONS)
-            if not looks_like_image and parts.hostname != "user-images.githubusercontent.com":
-                continue
-            if url not in urls:
-                urls.append(url)
+        image_assets = cast(dict[str, Any], task.get("image_assets") or {})
+        urls = list(dict.fromkeys(cast(list[str], image_assets.get("problem_statement") or [])))
         if not urls:
-            return {}
+            return {}, []
 
         manifest: dict[str, str] = {}
-        async with httpx.AsyncClient(timeout=ASSET_FETCH_TIMEOUT_SECONDS, follow_redirects=True) as client:
+        unstaged: list[str] = []
+        # Redirects are followed by hand so every hop is checked, not just the first.
+        async with httpx.AsyncClient(timeout=ASSET_FETCH_TIMEOUT_SECONDS, follow_redirects=False) as client:
             for url in urls:
                 try:
-                    async with client.stream("GET", url) as response:
-                        response.raise_for_status()
-                        data = bytearray()
-                        async for chunk in response.aiter_bytes():
-                            data.extend(chunk)
-                            if len(data) > MAX_PROBLEM_IMAGE_BYTES:
-                                raise RuntimeError("image exceeds the size limit")
-                except (httpx.HTTPError, RuntimeError) as exc:
+                    payload, suffix = await self._fetch_problem_image(client, url)
+                except (httpx.HTTPError, RuntimeError, ValueError) as exc:
                     logger.warning("Skipping problem-statement image %s: %s", url, exc)
+                    unstaged.append(url)
                     continue
-                payload = bytes(data)
-                suffix = Path(urlsplit(url).path).suffix.lower()
-                if suffix not in PROBLEM_IMAGE_EXTENSIONS:
-                    suffix = _image_suffix_from_bytes(payload) or ".png"
                 path = f"{PROBLEM_IMAGE_DIR}/{hashlib.sha256(url.encode()).hexdigest()[:32]}{suffix}"
                 await with_retry(sandbox, lambda: sandbox.upload_file(path, payload))
                 manifest[url] = path
@@ -623,7 +765,53 @@ class SWEBenchService(BenchmarkService):
                 sandbox,
                 lambda: sandbox.upload_file(PROBLEM_IMAGE_MANIFEST, json.dumps(manifest, indent=1).encode()),
             )
-        return manifest
+        return manifest, unstaged
+
+    async def _fetch_problem_image(self, client: httpx.AsyncClient, url: str) -> tuple[bytes, str]:
+        """Fetch one screenshot, checking every redirect hop, and return its bytes and suffix."""
+        url = _raw_github_url(url)
+        for _ in range(PROBLEM_IMAGE_REDIRECT_LIMIT + 1):
+            response = await self._get_from_a_checked_address(client, url)
+            try:
+                if response.is_redirect:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise RuntimeError("redirected without a location")
+                    # Resolved against the real URL, not the address it was fetched from.
+                    url = str(httpx.URL(url).join(location))
+                    continue
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    data.extend(chunk)
+                    if len(data) > MAX_PROBLEM_IMAGE_BYTES:
+                        raise RuntimeError(f"image exceeds {MAX_PROBLEM_IMAGE_BYTES} bytes")
+                payload = bytes(data)
+                return payload, _problem_image_suffix(url, payload, content_type)
+            finally:
+                await response.aclose()
+        raise RuntimeError(f"more than {PROBLEM_IMAGE_REDIRECT_LIMIT} redirects")
+
+    async def _get_from_a_checked_address(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
+        """Request `url` from an address that was checked, not from a second name lookup.
+
+        Connecting by name would resolve it again, so a host that answered publicly for the
+        check could answer privately for the fetch. The certificate is still validated
+        against the real hostname, which is sent as SNI and as the Host header.
+        """
+        addresses = await _public_addresses_for(url)
+        parts = urlsplit(url)
+        last_error: Exception | None = None
+        for address in addresses:
+            request = client.build_request("GET", _pinned_url(parts, address), headers={"Host": parts.netloc})
+            request.extensions["sni_hostname"] = parts.hostname
+            try:
+                return await client.send(request, stream=True)
+            except httpx.TransportError as error:
+                # A host can publish an address family this machine cannot route.
+                last_error = error
+        raise last_error or RuntimeError(f"no usable address for {url}")
 
     async def _stage_image_assets(self, sandbox: Sandbox, test_spec: TestSpec) -> list[str]:
         """Upload the binary assets the test patch needs and return the lines that restore them.
@@ -743,6 +931,8 @@ class SWEBenchService(BenchmarkService):
         self, evaluation_results: dict[str, Any], dataset: str | None = None
     ) -> FinalScoreResult:
         """Calculate final score as percentage of resolved tasks."""
+        self._reject_tasks_outside_the_dataset(list(evaluation_results), dataset)
+
         total = len(evaluation_results)
 
         resolved_tasks: list[str] = []
@@ -758,8 +948,84 @@ class SWEBenchService(BenchmarkService):
         score = round((resolved / total) * 100, 6) if total > 0 else 0.0
 
         metadata = {
+            # Read by swebench-final-view-lambda, which SWE-bench Verified still runs under.
             "resolved_tasks": resolved_tasks,
             "unresolved_tasks": unresolved_tasks,
+            **self._vals_format_metadata(list(evaluation_results), set(resolved_tasks), dataset),
         }
 
         return FinalScoreResult(score=score, metadata=metadata)
+
+    def _vals_format_metadata(
+        self, submitted: list[str], resolved: set[str], dataset: str | None
+    ) -> dict[str, Any]:
+        """Describe the run the way vals-format-lambda reads it.
+
+        Score and statuses are derived from the same resolved/unresolved split the legacy
+        view uses, so the two lambdas cannot disagree about a run.
+        """
+        populations = self._vals_format_populations(submitted, dataset)
+        primary = next(iter(populations))
+
+        return {
+            "score_types": VALS_FORMAT_SCORE_TYPES,
+            "results": {
+                # Only a subset population carries a selection; `full` is the whole run.
+                name: _vals_format_population(
+                    members, resolved, selection=None if name == "full" else members
+                )
+                for name, members in populations.items()
+            },
+            "primary_population": primary,
+            "tasks": [_vals_format_task(task_id, task_id in resolved) for task_id in submitted],
+            # The agent calls the model directly and runs its commands in the sandbox, so
+            # there is no model-proxy tool telemetry to count.
+            "usage_components": [{"component": "generation.model"}],
+        }
+
+    def _dataset_split(self, dataset: str | None) -> dict[str, Any]:
+        """Resolve one split, falling back to disk when the async factory has not run.
+
+        Scoring is pure, so callers reach it on a bare instance; `self.datasets` only
+        exists on a service built by `create()`.
+        """
+        key = dataset or "default"
+        loaded = getattr(self, "datasets", None)
+        if loaded is not None and key in loaded:
+            return loaded[key]
+        loader = DATASET_LOADERS.get(key)
+        if loader is None:
+            raise ValueError(f"Dataset '{key}' not found. Available datasets: {', '.join(DATASET_LOADERS)}")
+        return loader()
+
+    def _reject_tasks_outside_the_dataset(self, task_ids: list[str], dataset: str | None) -> None:
+        """A score is only meaningful over the split it was requested for.
+
+        This is what makes a Vals Index run reject a task outside the subset, rather than
+        quietly scoring it as if the subset were larger.
+        """
+        split = self._dataset_split(dataset)
+        for task_id in task_ids:
+            if task_id not in split:
+                raise ValueError(f"Task ID not found: {task_id}")
+
+    def _vals_format_populations(self, submitted: list[str], dataset: str | None) -> dict[str, list[str]]:
+        """Map each scored population to the submitted tasks it contains.
+
+        A run of the Vals Index subset is one population whichever way it was requested:
+        by name, or by submitting exactly that subset against the default dataset. The
+        multimodal splits have no index subset, so they only ever score `full`.
+        """
+        if (dataset or "default") == VALS_INDEX_DATASET:
+            return {VALS_INDEX_DATASET: submitted}
+        if (dataset or "default") in MULTIMODAL_DATASETS:
+            return {"full": submitted}
+
+        index_ids = set(self._dataset_split(VALS_INDEX_DATASET))
+        if submitted and set(submitted) == index_ids:
+            return {VALS_INDEX_DATASET: submitted}
+
+        submitted_index = [task_id for task_id in submitted if task_id in index_ids]
+        if not submitted_index:
+            return {"full": submitted}
+        return {"full": submitted, VALS_INDEX_DATASET: submitted_index}
