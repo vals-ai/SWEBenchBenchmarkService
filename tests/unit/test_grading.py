@@ -669,3 +669,51 @@ class TestProblemImageStaging:
         manifest, unstaged, _ = await self._stage(service, [url], {url: (200, body)}, monkeypatch)
 
         assert manifest == {} and unstaged == [url]
+
+
+class TestUpstreamExactGrading:
+    """Multimodal grades the log as the SWE-bench harness does, with none of the stream repairs."""
+
+    _KARMA_FAILURE = "Chrome Headless 120.0.0 (Linux x86_64) ol.Map renders FAILED"
+
+    def _openlayers_spec(self) -> TestSpec:
+        spec = _spec("fail_only", f2p=["ol.Map renders"], p2p=[])
+        spec.log_parser = "parse_log_openlayers"
+        return spec
+
+    def test_crlf_line_ends_are_read_as_the_harness_reads_them(self) -> None:
+        log = _log(self._KARMA_FAILURE).replace("\n", "\r\n")
+        assert grade_test_output(log, self._openlayers_spec(), "diff", upstream_exact=True).resolved is False
+
+    def test_a_lone_carriage_return_ends_a_line(self) -> None:
+        log = _log(self._KARMA_FAILURE).replace("\n", "\r")
+        assert grade_test_output(log, self._openlayers_spec(), "diff", upstream_exact=True).resolved is False
+
+    def test_control_characters_in_a_test_name_are_kept(self) -> None:
+        spec = _spec("pass_and_fail", f2p=["tests/a.py::test_fix"], p2p=["tests/a.py::test_ok"])
+        log = _log("PASSED tests/a.py::test_fix", "PASSED tests/a.py::test_ok​")
+        assert grade_test_output(log, spec, "diff").resolved is True
+        exact = grade_test_output(log, spec, "diff", upstream_exact=True)
+        assert exact.resolved is False
+        assert exact.pass_to_pass == {"success": [], "failure": ["tests/a.py::test_ok"]}
+
+    def test_status_words_are_not_split_off_a_preceding_token(self) -> None:
+        spec = _spec("pass_and_fail", f2p=["tests/a.py::test_fix"], p2p=[])
+        log = _log("tests/a.py::test_fixPASSED tests/a.py::test_fix")
+        assert grade_test_output(log, spec, "diff").status_map == {"tests/a.py::test_fix": "PASSED"}
+        # The fused token is left alone, so nothing parses and the run is not a pass.
+        assert grade_test_output(log, spec, "diff", upstream_exact=True).resolved is False
+
+    def test_a_failed_test_that_never_ran_is_still_a_pass_under_fail_only(self) -> None:
+        # Upstream's own behaviour, which this service must reproduce rather than repair.
+        log = _log("some unrelated output")
+        spec = self._openlayers_spec()
+        result = grade_test_output(log + "\nChrome Headless 1.0 (Linux x86_64) other FAILED\n", spec, "diff", upstream_exact=True)
+        assert result.resolved is True
+
+
+def test_clean_pty_stream_gives_back_the_text_the_log_file_would_hold() -> None:
+    from swebench_service.evaluation import clean_pty_stream
+
+    assert clean_pty_stream("\x1b[32mok\x1b[0m a\r\nb\rc\n") == "ok a\nb\nc\n"
+    assert clean_pty_stream("\x1b]0;title\x07\x1b(Bq\x1b7r") == "qr"

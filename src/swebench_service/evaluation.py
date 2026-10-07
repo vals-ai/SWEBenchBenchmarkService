@@ -63,8 +63,34 @@ def echo_prediction(patch: bytes) -> EchoedPrediction:
     return EchoedPrediction(patch[:cut].decode("utf-8", errors="replace"), len(patch), True)
 
 
+_ANSI_ESCAPE = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]"  # CSI: colours, cursor moves, erase
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC: window title
+    r"|\x1b[()][A-Za-z0-9]"  # charset select
+    r"|\x1b[78=>]"  # save/restore cursor, keypad mode
+)
+
+
+def normalize_newlines(text: str) -> str:
+    """Read a log as the SWE-bench harness does: in text mode, so \r\n and a lone \r both become \n."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def clean_pty_stream(text: str) -> str:
+    """Make the reassembled PTY stream resemble the plain-pipe log the harness grades.
+
+    Only used when the tee'd log file cannot be read: the stream carries CRLF line ends and ANSI colour codes the
+    log never had, and CRLF alone changes which lines the openlayers FAILED patterns match.
+    """
+    return _ANSI_ESCAPE.sub("", normalize_newlines(text))
+
+
 def grade_test_output(
-    test_output: str, test_spec: TestSpec, prediction: EchoedPrediction | str | None
+    test_output: str,
+    test_spec: TestSpec,
+    prediction: EchoedPrediction | str | None,
+    *,
+    upstream_exact: bool = False,
 ) -> EvaluationResult:
     """
     Grade test output in memory using SWE-bench's logic.
@@ -76,6 +102,9 @@ def grade_test_output(
         test_output: The output from running tests
         test_spec: The test specification for this task
         prediction: The captured patch, as `echo_prediction` describes it (a plain string is echoed as is)
+        upstream_exact: Grade the log exactly as the SWE-bench harness does: newlines read in text mode and the parser
+            output used as printed. Off, the log also goes through the repairs below, which were written for chunks of
+            a PTY stream fused together and are kept so SWE-bench Verified grades as it always has.
 
     Returns:
         EvaluationResult with resolved status, scores, and detailed test results
@@ -112,16 +141,20 @@ def grade_test_output(
     # Get log parser for this task
     log_parser = PARSER_REGISTRY[test_spec.log_parser]
 
+    if upstream_exact:
+        test_output = normalize_newlines(test_output)
+
     # Extract content between markers
     test_content = test_output.split(START_TEST_OUTPUT)[1].split(END_TEST_OUTPUT)[0]
 
-    # BUG: Split concatenated test results onto separate lines. The stream_command layer
-    # can emit chunks without newlines, fusing adjacent test results together.
-    # Django-style: "... ok<next_test>" -> "... ok\n<next_test>"
-    test_content = re.sub(r"(\.\.\. (?:ok|OK|FAIL|ERROR|skipped))(?=\S)", r"\1\n", test_content)
+    if not upstream_exact:
+        # BUG: Split concatenated test results onto separate lines. The stream_command layer
+        # can emit chunks without newlines, fusing adjacent test results together.
+        # Django-style: "... ok<next_test>" -> "... ok\n<next_test>"
+        test_content = re.sub(r"(\.\.\. (?:ok|OK|FAIL|ERROR|skipped))(?=\S)", r"\1\n", test_content)
 
-    # BUG: Pytest-style: "...real]PASSED lib/" -> "...real]\nPASSED lib/"
-    test_content = re.sub(r"(?<=\S)((?:PASSED|FAILED|ERROR|SKIPPED|XFAIL) )", r"\n\1", test_content)
+        # BUG: Pytest-style: "...real]PASSED lib/" -> "...real]\nPASSED lib/"
+        test_content = re.sub(r"(?<=\S)((?:PASSED|FAILED|ERROR|SKIPPED|XFAIL) )", r"\n\1", test_content)
 
     # Parse test content
     status_map = log_parser(test_content, test_spec)
@@ -155,8 +188,9 @@ def grade_test_output(
             **echoed,
         )
 
-    # BUG: Remove all unicode characters that are control characters
-    status_map = {"".join(c for c in k if unicodedata.category(c)[0] != "C"): v for k, v in status_map.items()}
+    if not upstream_exact:
+        # BUG: Remove all unicode characters that are control characters
+        status_map = {"".join(c for c in k if unicodedata.category(c)[0] != "C"): v for k, v in status_map.items()}
 
     # === END IN-MEMORY get_logs_eval ===
 

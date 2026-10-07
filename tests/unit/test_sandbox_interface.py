@@ -3,6 +3,7 @@ import base64
 from collections.abc import AsyncGenerator, Mapping
 import re
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from benchmark_service.sandbox import ExecResult, Sandbox
@@ -328,3 +329,152 @@ async def test_multimodal_resources_give_carbon_more_memory() -> None:
     assert carbon.resources == MULTIMODAL_REPO_RESOURCES["carbon-design-system/carbon"]
     assert carbon.resources.memory == 16
     assert openlayers.resources == MULTIMODAL_RESOURCES
+
+
+def _multimodal_service() -> SWEBenchService:
+    service = SWEBenchService()
+    service.datasets = {
+        "multimodal": {"task-1": {"base_commit": "abc123", "repo": "openlayers/openlayers", "version": "7.1"}}
+    }
+    return service
+
+
+def _patch_eval_helpers(monkeypatch: pytest.MonkeyPatch, graded: list[tuple[str, dict[str, object]]]) -> None:
+    def grade_test_output(test_output: str, test_spec: object, prediction: object, **kwargs: object) -> EvaluationResult:
+        graded.append((test_output, kwargs))
+        return EvaluationResult(patch_successfully_applied=True, resolved=True, resolution_status="FULL")
+
+    def make_test_spec(task: object) -> object:
+        return object()
+
+    def create_evaluation_script(spec: object, task_id: str, restore_commands: list[str] | None = None) -> str:
+        return ""
+
+    monkeypatch.setattr("swebench_service.benchmark_service.make_test_spec", make_test_spec)
+    monkeypatch.setattr("swebench_service.benchmark_service.create_evaluation_script", create_evaluation_script)
+    monkeypatch.setattr("swebench_service.benchmark_service.grade_test_output", grade_test_output)
+
+
+class PatchedSandbox(FakeSandbox):
+    """A sandbox whose agent left a one-line patch, and whose eval log file reads back as `log_file`."""
+
+    def __init__(self, log_file: str | None) -> None:
+        super().__init__()
+        self.log_file = log_file
+
+    async def exec(self, command: str, *, cwd: str | None = None, timeout: float | None = None) -> ExecResult:
+        if PREDICTION_CAPTURE_COMMAND in command:
+            self.commands.append((command, cwd))
+            match = re.search(r">\s*(\S*swebench-prediction-capture\S*)", command)
+            self.uploads[match.group(1) if match else "/tmp/p"] = b"diff --git a/x b/x\n"
+            return ExecResult(exit_code=0, output=str(len(b"diff --git a/x b/x\n")))
+        if command.startswith("cat ") and self.log_file is not None:
+            self.commands.append((command, cwd))
+            return ExecResult(exit_code=0, output=self.log_file)
+        return await super().exec(command, cwd=cwd, timeout=timeout)
+
+
+async def test_an_empty_multimodal_patch_is_counted_unresolved_without_running_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The harness drops an empty patch before it runs anything; running it would hand out fail_only passes."""
+    service = _multimodal_service()
+    graded: list[tuple[str, dict[str, object]]] = []
+    _patch_eval_helpers(monkeypatch, graded)
+    ran: list[str] = []
+
+    async def stream(sandbox: Sandbox, command: str, *, cwd: str, **kwargs: object) -> AsyncGenerator[str, None]:
+        ran.append(command)
+        yield "should not run"
+
+    monkeypatch.setattr(service, "stream_command_with_watchdog", stream)
+    sandbox = FakeSandbox()
+
+    chunks = [chunk async for chunk in service.evaluate_instance("task-1", sandbox, dataset="multimodal")]
+
+    result = cast(dict[str, Any], [chunk.data for chunk in chunks if chunk.type == "result"][-1])
+    assert result["resolved"] is False and result["resolution_status"] == "NO"
+    assert result["patch_successfully_applied"] is False
+    assert ran == [] and graded == []
+    assert "/root/eval.sh" not in sandbox.uploads
+
+
+async def test_an_empty_verified_patch_is_still_evaluated(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = SWEBenchService()
+    service.datasets = {"default": {"task-1": {"base_commit": "abc123", "repo": "django/django", "version": "4.2"}}}
+    graded: list[tuple[str, dict[str, object]]] = []
+    _patch_eval_helpers(monkeypatch, graded)
+
+    async def stream(sandbox: Sandbox, command: str, *, cwd: str, **kwargs: object) -> AsyncGenerator[str, None]:
+        assert kwargs == {}
+        yield "output"
+
+    monkeypatch.setattr(service, "stream_command_with_watchdog", stream)
+
+    _ = [chunk async for chunk in service.evaluate_instance("task-1", FakeSandbox())]
+
+    assert graded == [("output", {})]
+
+
+async def test_multimodal_grades_the_log_file_exactly_and_caps_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    from swebench_service.benchmark_service import EVAL_TOTAL_SECONDS
+
+    service = _multimodal_service()
+    graded: list[tuple[str, dict[str, object]]] = []
+    _patch_eval_helpers(monkeypatch, graded)
+    limits: list[object] = []
+
+    async def stream(sandbox: Sandbox, command: str, *, cwd: str, **kwargs: object) -> AsyncGenerator[str, None]:
+        limits.append(kwargs.get("total_seconds"))
+        yield "stream\r\n"
+
+    monkeypatch.setattr(service, "stream_command_with_watchdog", stream)
+
+    _ = [chunk async for chunk in service.evaluate_instance("task-1", PatchedSandbox("file\n"), dataset="multimodal")]
+
+    assert len(limits) == 1
+    assert isinstance(limits[0], float) and 0 < limits[0] <= EVAL_TOTAL_SECONDS
+    assert graded == [("file\n", {"upstream_exact": True})]
+
+
+async def test_multimodal_cleans_the_pty_stream_when_the_log_file_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _multimodal_service()
+    graded: list[tuple[str, dict[str, object]]] = []
+    _patch_eval_helpers(monkeypatch, graded)
+
+    async def stream(sandbox: Sandbox, command: str, *, cwd: str, **kwargs: object) -> AsyncGenerator[str, None]:
+        yield "\x1b[31mFAILED\x1b[0m a\r\n"
+
+    monkeypatch.setattr(service, "stream_command_with_watchdog", stream)
+
+    _ = [chunk async for chunk in service.evaluate_instance("task-1", PatchedSandbox(None), dataset="multimodal")]
+
+    assert graded == [("FAILED a\n", {"upstream_exact": True})]
+
+
+async def test_a_run_that_keeps_printing_still_hits_the_total_cap() -> None:
+    from swebench_service.benchmark_service import EvaluationTimedOut
+
+    class ChattySandbox(FakeSandbox):
+        async def command(
+            self,
+            command: str,
+            *,
+            cwd: str | None = None,
+            timeout: float | None = None,
+            env_vars: Mapping[str, str] | None = None,
+        ) -> AsyncGenerator[str, None]:
+            del command, cwd, timeout, env_vars
+            while True:
+                await asyncio.sleep(0.005)
+                yield "still going\n"
+
+    service = SWEBenchService()
+    with pytest.raises(EvaluationTimedOut, match="still running after"):
+        async for _ in service.stream_command_with_watchdog(
+            ChattySandbox(), "x", cwd="/testbed", quiet_seconds=0.05, stall_seconds=5.0, total_seconds=0.05
+        ):
+            pass
+    assert issubclass(EvaluationTimedOut, EvaluationStalled)
