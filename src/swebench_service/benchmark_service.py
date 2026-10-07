@@ -9,6 +9,7 @@ import re
 import logging
 import shlex
 import socket
+import time
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 from collections.abc import AsyncGenerator
 from pathlib import Path
@@ -60,6 +61,8 @@ from swebench_service import (
     task_row_summary,
     test_patch_assets,
 )
+from swebench_service.evaluation import clean_pty_stream
+from swebench_service.schemas import EvaluationResult
 from swebench_service.test_spec import TestSpec
 from swebench_service.eval_resume import MAX_PREDICTION_BYTES, EvalResumeState, load_prediction, persist_prediction
 from swebench_service.utils import with_retry
@@ -154,6 +157,7 @@ def _problem_image_suffix(url: str, payload: bytes, content_type: str) -> str:
     suffix = Path(urlsplit(url).path).suffix.lower()
     return suffix if suffix in PROBLEM_IMAGE_EXTENSIONS else ".png"
 
+
 PROBLEM_STATEMENT_PATH = "/tmp/problem_statement.txt"
 PREDICTION_PATH = "/tmp/swebench-prediction.patch"
 AGENT_BASELINE_TREE_PATH = "/tmp/swebench-agent-baseline.tree"
@@ -186,6 +190,9 @@ COMMAND_QUIET_SECONDS = 300.0
 # died of a V8 heap overflow, a rendering runner waiting on a page that threw) blocks the task
 # forever: the watchdog above only reports silence.
 EVAL_STALL_SECONDS = 1800.0
+# The Multimodal splits are graded the way the SWE-bench harness grades them, which also caps the whole
+# test command at its `--timeout` default of 30 minutes, whether or not it keeps printing.
+EVAL_TOTAL_SECONDS = 1800.0
 EVAL_SANDBOX_CREATE_TIMEOUT_SECONDS = 600
 EVAL_SANDBOX_AUTO_STOP_MINUTES = 15
 IMAGE_DIGEST_OVERRIDES = {
@@ -254,6 +261,8 @@ def _vals_format_task(task_id: str, resolved: bool) -> dict[str, Any]:
         "retries": [],
         "extra": {},
     }
+
+
 # The Multimodal repositories run heavier suites than the Python ones: browser suites under
 # Xvfb (Chart.js, openlayers, lighthouse), Puppeteer, and Jest over monorepos. They get the
 # allocation the large Verified tasks already use.
@@ -319,6 +328,10 @@ def _resume_sandbox_name(state: EvalResumeState) -> str:
 
 class EvaluationStalled(RuntimeError):
     """The test command produced no output for EVAL_STALL_SECONDS."""
+
+
+class EvaluationTimedOut(EvaluationStalled):
+    """The test command ran past its total time budget."""
 
 
 def watchdog_message(quiet_seconds: float) -> str:
@@ -410,9 +423,11 @@ class SWEBenchService(BenchmarkService):
         cwd: str,
         quiet_seconds: float = COMMAND_QUIET_SECONDS,
         stall_seconds: float = EVAL_STALL_SECONDS,
+        total_seconds: float | None = None,
     ) -> AsyncGenerator[str, None]:
         output: asyncio.Queue[str | None] = asyncio.Queue()
         quiet_for = 0.0
+        deadline = None if total_seconds is None else time.monotonic() + total_seconds
 
         async def stream_command() -> None:
             try:
@@ -424,10 +439,17 @@ class SWEBenchService(BenchmarkService):
         stream_task = asyncio.create_task(stream_command())
         try:
             while True:
+                wait = quiet_seconds
+                if deadline is not None:
+                    wait = min(wait, deadline - time.monotonic())
+                    if wait <= 0:
+                        raise EvaluationTimedOut(f"still running after {total_seconds:.0f} seconds")
                 try:
-                    line = await asyncio.wait_for(output.get(), timeout=quiet_seconds)
+                    line = await asyncio.wait_for(output.get(), timeout=wait)
                 except TimeoutError:
-                    quiet_for += quiet_seconds
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise EvaluationTimedOut(f"still running after {total_seconds:.0f} seconds") from None
+                    quiet_for += wait
                     if quiet_for >= stall_seconds:
                         raise EvaluationStalled(f"no output for {quiet_for:.0f} seconds") from None
                     yield watchdog_message(quiet_seconds)
@@ -861,6 +883,19 @@ class SWEBenchService(BenchmarkService):
     ) -> AsyncGenerator[StreamChunk, None]:
         """Run the existing atomic SWE-bench evaluator for one captured patch."""
         task = self.get_dataset(dataset)[task_id]
+        # The Multimodal splits are graded as the SWE-bench harness grades them; Verified keeps its own rules.
+        upstream_aligned = (dataset or "default") in MULTIMODAL_DATASETS
+
+        if upstream_aligned and prediction.size is None:
+            # The harness drops an empty or missing patch before it runs anything and counts the task
+            # unresolved. Running the tests anyway would pass every task whose failing tests never
+            # execute under a no-patch checkout, which `fail_only` grading counts as a pass.
+            yield StreamMessageChunk(type="message", data="Empty patch: not evaluated, counted unresolved")
+            empty_result = EvaluationResult(
+                patch_successfully_applied=False, resolved=False, resolution_status="NO", **prediction.fields()
+            )
+            yield StreamResultChunk(type="result", data=empty_result.model_dump())
+            return
 
         # Create and upload evaluation script, with the patch's binary assets staged so the
         # script can copy them into place after its own `git apply`.
@@ -887,7 +922,12 @@ class SWEBenchService(BenchmarkService):
             )
             yield StreamMessageChunk(type="message", data=msg)
             try:
-                async for line in self.stream_command_with_watchdog(sandbox, run_command, cwd="/testbed"):
+                async for line in self.stream_command_with_watchdog(
+                    sandbox,
+                    run_command,
+                    cwd="/testbed",
+                    **({"total_seconds": EVAL_TOTAL_SECONDS} if upstream_aligned else {}),
+                ):
                     if line != watchdog_message(COMMAND_QUIET_SECONDS):
                         test_output.append(line)
                     yield StreamMessageChunk(type="message", data=line)
@@ -909,21 +949,29 @@ class SWEBenchService(BenchmarkService):
         # file (a plain pipe) preserves them. Fall back to the stream if the file
         # is unavailable (e.g. the run was interrupted before it was written).
         graded_output = "".join(test_output)
+        from_log_file = False
         try:
             log_file = await with_retry(sandbox, lambda: sandbox.exec(f"cat {EVAL_OUTPUT_PATH}", cwd="/testbed"))
             if log_file.output and log_file.output.strip():
                 graded_output = log_file.output
+                from_log_file = True
         except SandboxError:
             pass
+        if upstream_aligned and not from_log_file:
+            # The stream is a PTY: CRLF line ends and colour codes the harness's log never has.
+            graded_output = clean_pty_stream(graded_output)
         if stalled is not None:
             # The harness marks a run over its time budget with this line and grades it unresolved.
             graded_output = f"{graded_output}\n{TESTS_TIMEOUT}\n"
+            outcome = "timed out" if isinstance(stalled, EvaluationTimedOut) else "stalled"
             yield StreamMessageChunk(
                 type="message",
-                data=f"Evaluation stalled ({stalled}); graded as a test timeout, as the SWE-bench harness does",
+                data=f"Evaluation {outcome} ({stalled}); graded as a test timeout, as the SWE-bench harness does",
             )
 
-        evaluation_result = grade_test_output(graded_output, test_spec, prediction)
+        evaluation_result = grade_test_output(
+            graded_output, test_spec, prediction, **({"upstream_exact": True} if upstream_aligned else {})
+        )
 
         yield StreamResultChunk(type="result", data=evaluation_result.model_dump())
 

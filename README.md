@@ -93,6 +93,15 @@ Binary test assets (rendering baselines such as `expected.png`, which a text pat
 
 The revision is pinned because the upstream split has been reshaped in place before.
 
+Both Multimodal splits are graded the way the SWE-bench harness grades them, and Verified keeps its own rules:
+
+- The grading functions are the harness's own (`swebench==5.0.2`), and the log is read as the harness reads it: newlines normalised as a text-mode read does, the parser's output used as printed, no rewriting of lines or test names.
+- An empty patch is not evaluated and counts as unresolved, as the harness's `empty_patch_ids` do. Under `fail_only` grading (the openlayers instances) a test that never ran counts as passed, so a no-patch checkout would otherwise resolve instances; the harness has this same property for every patch that does apply, and it is not changed here.
+- The test command is capped at 30 minutes of total run time, as the harness's `--timeout` default does, in addition to the 30-minute no-output watchdog. Either one grades the run as a test timeout.
+- The tee'd log file is what gets graded. If it cannot be read, the PTY stream stands in with its CRLF line ends and ANSI colour codes removed.
+
+Not matched: the harness applies the patch in a fresh container, whereas this service evaluates the agent's own sandbox in place.
+
 ## Docker Images
 
 Each task uses a pre-built Docker image with the repository and dependencies:
