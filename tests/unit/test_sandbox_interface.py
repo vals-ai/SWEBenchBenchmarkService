@@ -3,6 +3,7 @@ import base64
 from collections.abc import AsyncGenerator, Mapping
 import re
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from benchmark_service.sandbox import ExecResult, Sandbox
@@ -343,10 +344,14 @@ def _patch_eval_helpers(monkeypatch: pytest.MonkeyPatch, graded: list[tuple[str,
         graded.append((test_output, kwargs))
         return EvaluationResult(patch_successfully_applied=True, resolved=True, resolution_status="FULL")
 
-    monkeypatch.setattr("swebench_service.benchmark_service.make_test_spec", lambda task: object())
-    monkeypatch.setattr(
-        "swebench_service.benchmark_service.create_evaluation_script", lambda spec, task_id, restore=None: ""
-    )
+    def make_test_spec(task: object) -> object:
+        return object()
+
+    def create_evaluation_script(spec: object, task_id: str, restore_commands: list[str] | None = None) -> str:
+        return ""
+
+    monkeypatch.setattr("swebench_service.benchmark_service.make_test_spec", make_test_spec)
+    monkeypatch.setattr("swebench_service.benchmark_service.create_evaluation_script", create_evaluation_script)
     monkeypatch.setattr("swebench_service.benchmark_service.grade_test_output", grade_test_output)
 
 
@@ -387,7 +392,7 @@ async def test_an_empty_multimodal_patch_is_counted_unresolved_without_running_t
 
     chunks = [chunk async for chunk in service.evaluate_instance("task-1", sandbox, dataset="multimodal")]
 
-    result = [chunk.data for chunk in chunks if chunk.type == "result"][-1]
+    result = cast(dict[str, Any], [chunk.data for chunk in chunks if chunk.type == "result"][-1])
     assert result["resolved"] is False and result["resolution_status"] == "NO"
     assert result["patch_successfully_applied"] is False
     assert ran == [] and graded == []
@@ -427,7 +432,8 @@ async def test_multimodal_grades_the_log_file_exactly_and_caps_the_run(monkeypat
 
     _ = [chunk async for chunk in service.evaluate_instance("task-1", PatchedSandbox("file\n"), dataset="multimodal")]
 
-    assert len(limits) == 1 and 0 < limits[0] <= EVAL_TOTAL_SECONDS  # type: ignore[operator]
+    assert len(limits) == 1
+    assert isinstance(limits[0], float) and 0 < limits[0] <= EVAL_TOTAL_SECONDS
     assert graded == [("file\n", {"upstream_exact": True})]
 
 
