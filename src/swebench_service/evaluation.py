@@ -63,7 +63,12 @@ def echo_prediction(patch: bytes) -> EchoedPrediction:
     return EchoedPrediction(patch[:cut].decode("utf-8", errors="replace"), len(patch), True)
 
 
-_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_ANSI_ESCAPE = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]"  # CSI: colours, cursor moves, erase
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC: window title
+    r"|\x1b[()][A-Za-z0-9]"  # charset select
+    r"|\x1b[78=>]"  # save/restore cursor, keypad mode
+)
 
 
 def normalize_newlines(text: str) -> str:

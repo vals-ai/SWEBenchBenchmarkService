@@ -913,6 +913,7 @@ class SWEBenchService(BenchmarkService):
 
         test_output: list[str] = []
         stalled: EvaluationStalled | None = None
+        started = time.monotonic()
         for attempt in range(MAX_RETRIES):
             test_output = []
             msg = (
@@ -922,11 +923,10 @@ class SWEBenchService(BenchmarkService):
             )
             yield StreamMessageChunk(type="message", data=msg)
             try:
+                # One budget for the whole test command, not one per retry.
+                limits = {"total_seconds": max(EVAL_TOTAL_SECONDS - (time.monotonic() - started), 0.001)}
                 async for line in self.stream_command_with_watchdog(
-                    sandbox,
-                    run_command,
-                    cwd="/testbed",
-                    **({"total_seconds": EVAL_TOTAL_SECONDS} if upstream_aligned else {}),
+                    sandbox, run_command, cwd="/testbed", **(limits if upstream_aligned else {})
                 ):
                     if line != watchdog_message(COMMAND_QUIET_SECONDS):
                         test_output.append(line)

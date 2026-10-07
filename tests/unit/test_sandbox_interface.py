@@ -427,7 +427,7 @@ async def test_multimodal_grades_the_log_file_exactly_and_caps_the_run(monkeypat
 
     _ = [chunk async for chunk in service.evaluate_instance("task-1", PatchedSandbox("file\n"), dataset="multimodal")]
 
-    assert limits == [EVAL_TOTAL_SECONDS]
+    assert len(limits) == 1 and 0 < limits[0] <= EVAL_TOTAL_SECONDS  # type: ignore[operator]
     assert graded == [("file\n", {"upstream_exact": True})]
 
 

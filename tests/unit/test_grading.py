@@ -716,3 +716,4 @@ def test_clean_pty_stream_gives_back_the_text_the_log_file_would_hold() -> None:
     from swebench_service.evaluation import clean_pty_stream
 
     assert clean_pty_stream("\x1b[32mok\x1b[0m a\r\nb\rc\n") == "ok a\nb\nc\n"
+    assert clean_pty_stream("\x1b]0;title\x07\x1b(Bq\x1b7r") == "qr"
