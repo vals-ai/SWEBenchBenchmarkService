@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 
 dependencies = [
     "boto3>=1.42.62",
-    "create-benchmark-service==0.39.1",
+    "create-benchmark-service==0.41.1",
     "datasets>=4.4.2",
     "httpx>=0.27.0",
     "swebench==5.0.2",
@@ -63,4 +63,4 @@ markers = [
 addopts = "-v -m 'not experimental'"
 
 [tool.uv.sources]
-create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", tag = "v0.39.1" }
+create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", tag = "v0.41.1" }
