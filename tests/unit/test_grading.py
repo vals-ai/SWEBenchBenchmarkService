@@ -124,6 +124,32 @@ class TestEvaluationScript:
         assert create_evaluation_script(spec, spec.instance_id, []) == spec.eval_script
         assert create_evaluation_script(spec, spec.instance_id) == spec.eval_script
 
+    @staticmethod
+    def _browser_spec(repo: str, test_line: str) -> TestSpec:
+        spec = _spec("pass_and_fail", f2p=["t"], p2p=[])
+        spec.repo = repo
+        spec.eval_script_list = ["#!/bin/bash", "set -uxo pipefail", "cd /testbed", START_TEST_OUTPUT, test_line]
+        return spec
+
+    def test_an_openlayers_browser_row_without_a_chrome_path_gets_one(self) -> None:
+        """Without it the runner cannot launch a browser in the image, whatever the patch does."""
+        spec = self._browser_spec("openlayers/openlayers", 'su chromeuser -c "npm run test-browser"')
+        lines = create_evaluation_script(spec, spec.instance_id).split("\n")
+        export = "export PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable"
+        assert lines.count(export) == 1
+        assert lines[lines.index("set -uxo pipefail") + 1] == export
+
+    def test_other_rows_keep_their_eval_script_without_a_chrome_path(self) -> None:
+        test_browser = 'su chromeuser -c "npm run test-browser"'
+        cases = [
+            ("openlayers/openlayers", "PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable " + test_browser),
+            ("openlayers/openlayers", "npm run test-node"),
+            ("other/project", test_browser),
+        ]
+        for repo, test_line in cases:
+            spec = self._browser_spec(repo, test_line)
+            assert create_evaluation_script(spec, spec.instance_id) == spec.eval_script
+
     def test_the_preamble_logs_headers_instead_of_the_whole_repository(self) -> None:
         """The images have a squashed history, so `git show` there is the entire repo as one diff."""
         base = "716923f458c2ba90b5a4ec3ab41dcae8bc0a9917"

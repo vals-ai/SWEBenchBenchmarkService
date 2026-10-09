@@ -130,6 +130,19 @@ def create_evaluation_script(test_spec: TestSpec, task_id: str, restore_commands
             "tox --current-env -epy39 -v -- -rA",
         )
 
+    # BUG: a few openlayers rows run the browser tests without PUPPETEER_EXECUTABLE_PATH, but the image
+    # carries only system Chrome, so the runner cannot launch a browser whatever the patch does.
+    if (
+        test_spec.repo == "openlayers/openlayers"
+        and "PUPPETEER_EXECUTABLE_PATH" not in evaluation_script
+        and "test-browser" in evaluation_script
+    ):
+        evaluation_script = evaluation_script.replace(
+            "set -uxo pipefail",
+            "set -uxo pipefail\nexport PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable",
+            1,
+        )
+
     if restore_commands:
         lines = evaluation_script.split("\n")
         for index, line in enumerate(lines):
