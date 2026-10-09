@@ -2,7 +2,8 @@
 
 import pytest
 
-from swebench_service.benchmark_service import SWEBenchService, _build_setup_script
+from swebench_service.benchmark_service import SWEBenchService
+from swebench_service.test_spec import get_pre_install_commands
 
 
 @pytest.fixture(autouse=True)
@@ -18,11 +19,11 @@ def setup_dataset() -> None:
         ("matplotlib-task", "matplotlib/matplotlib", "3.7", "default",
          {"archive.ubuntu.com", "security.ubuntu.com", "www.qhull.org"}, {"pypi.org", "files.pythonhosted.org"}),
         ("astropy-task", "astropy/astropy", "5.0", "default",
-         set(), {"pypi.org", "files.pythonhosted.org"}),
+         set[str](), {"pypi.org", "files.pythonhosted.org"}),
         ("sphinx-doc__sphinx-10323", "sphinx-doc/sphinx", "5.0", "default",
-         set(), {"pypi.org", "files.pythonhosted.org"}),
+         set[str](), {"pypi.org", "files.pythonhosted.org"}),
         ("openlayers__openlayers-14932", "openlayers/openlayers", "7.1", "multimodal",
-         set(), {"registry.npmjs.org", "registry.yarnpkg.com", "storage.googleapis.com"}),
+         set[str](), {"registry.npmjs.org", "registry.yarnpkg.com", "storage.googleapis.com"}),
     ],
 )
 async def test_retrieve_task_selects_package_access(
@@ -49,7 +50,7 @@ async def test_sphinx_graphviz_setup_has_package_access(task_id: str) -> None:
     service = SWEBenchService()
     service.datasets = {"default": {task_id: task}}
 
-    assert "apt-get update && apt-get install -y graphviz" in _build_setup_script(task)
+    assert "apt-get update && apt-get install -y graphviz" in get_pre_install_commands(task["repo"], task["version"])
     response = await service.retrieve_task(task_id, dataset="default")
     policy = response.model_dump(mode="json")["egress"]
     apt_hosts = {"archive.ubuntu.com", "security.ubuntu.com"}
