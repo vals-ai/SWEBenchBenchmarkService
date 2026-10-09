@@ -31,6 +31,7 @@ from benchmark_service.schemas import (
     FinalScoreResult,
     Resources,
     RetrieveTaskResponse,
+    SandboxRecoveryPolicy,
     StreamChunk,
     StreamEvalResumeStateChunk,
     StreamMessageChunk,
@@ -201,6 +202,9 @@ IMAGE_DIGEST_OVERRIDES = {
 MULTIMODAL_DATASET = "multimodal"
 MULTIMODAL_DEV_DATASET = "multimodal_dev"
 MULTIMODAL_DATASETS = frozenset({MULTIMODAL_DATASET, MULTIMODAL_DEV_DATASET})
+# The slowest legitimate attempt observed was under 3 hours, so this only fires on a hang.
+MULTIMODAL_AGENT_TIMEOUT_SECONDS = 6 * 60 * 60
+MULTIMODAL_SANDBOX_ATTEMPTS = 3
 VALS_INDEX_DATASET = "vals_index"
 DATASET_LOADERS: dict[str, Any] = {
     "default": load_dataset_from_disk,
@@ -501,15 +505,21 @@ class SWEBenchService(BenchmarkService):
         if task_id in ["scikit-learn__scikit-learn-14710", "psf__requests-2317"]:
             resources.vcpu = 4
             resources.memory = 8
+        agent_timeout: float | None = None
+        sandbox_recovery: SandboxRecoveryPolicy | None = None
         if (dataset or "default") in MULTIMODAL_DATASETS:
             resources = MULTIMODAL_REPO_RESOURCES.get(cast(str, task.get("repo", "")), MULTIMODAL_RESOURCES).model_copy()
+            agent_timeout = MULTIMODAL_AGENT_TIMEOUT_SECONDS
+            # A lost sandbox restarts the task in a fresh one; only the last attempt is graded.
+            sandbox_recovery = SandboxRecoveryPolicy(max_sandbox_attempts=MULTIMODAL_SANDBOX_ATTEMPTS)
 
         return RetrieveTaskResponse(
             source=ImageSource(image=docker_image),
             problem_path=PROBLEM_STATEMENT_PATH,
             cwd="/testbed",
-            agent_timeout=None,
+            agent_timeout=agent_timeout,
             resources=resources,
+            sandbox_recovery=sandbox_recovery,
         )
 
     def _task_contract_sha256(

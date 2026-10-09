@@ -122,6 +122,7 @@ class TestEndpoints:
 
         assert "agent_timeout" in data
         assert data["agent_timeout"] is None
+        assert data["sandbox_recovery"] is None
 
         assert "resources" in data
         assert data["resources"]["vcpu"] >= 2
@@ -249,6 +250,20 @@ class TestMultimodalEndpoints:
         response = await client.request_verify_task_ids(dataset="multimodal_dev")
         assert response.status_code == 200
         assert response.json()["task_ids"] == list(load_multimodal_dev_dataset_from_disk().keys())
+
+    @pytest.mark.parametrize(
+        ("dataset", "loader"),
+        [("multimodal", load_multimodal_dataset_from_disk), ("multimodal_dev", load_multimodal_dev_dataset_from_disk)],
+    )
+    async def test_retrieve_task_multimodal_bounds_agent_and_recovers_sandbox(
+        self, client: BenchmarkServiceTestClient, dataset: str, loader: Callable[[], dict[str, Any]]
+    ) -> None:
+        """Multimodal tasks bound a hung agent at 6 hours and opt in to sandbox recovery."""
+        response = await client.request_retrieve_task(next(iter(loader())), dataset=dataset)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["agent_timeout"] == 21600
+        assert data["sandbox_recovery"] == {"max_sandbox_attempts": 3}
 
     async def test_multimodal_splits_are_disjoint(self, client: BenchmarkServiceTestClient) -> None:
         """A dev instance is not a member of the test-split dataset, and vice versa."""
