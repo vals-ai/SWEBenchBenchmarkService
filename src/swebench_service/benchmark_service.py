@@ -27,6 +27,7 @@ from benchmark_service.sandbox import (
     SandboxProvider,
 )
 from benchmark_service.schemas import (
+    BenchmarkEgressPlan,
     EvaluateResponseRequest,
     FinalScoreResult,
     Resources,
@@ -66,6 +67,41 @@ from swebench_service.schemas import EvaluationResult
 from swebench_service.test_spec import TestSpec
 from swebench_service.eval_resume import MAX_PREDICTION_BYTES, EvalResumeState, load_prediction, persist_prediction
 from swebench_service.utils import with_retry
+
+# Temporary model access preserves historical agents during migration.
+MODEL_EGRESS_HOSTS = [
+    "*.cursor.sh",
+    "*.cursorapi.com",
+    "downloads.cursor.com",
+    "api.anthropic.com",
+    "api.arcee.ai",
+    "api.cohere.ai",
+    "api.deepseek.com",
+    "api.devin.ai",
+    "api.meta.ai",
+    "api.minimax.io",
+    "api.mistral.ai",
+    "api.moonshot.ai",
+    "api.openai.com",
+    "api.x.ai",
+    "api.xiaomimimo.com",
+    "api.z.ai",
+    "app.devin.ai",
+    "claude.ai",
+    "dashscope-intl.aliyuncs.com",
+    "dashscope.aliyuncs.com",
+    "dev.model-gateway.vals.ai",
+    "generativelanguage.googleapis.com",
+    "inference.poolside.ai",
+    "integrate.api.nvidia.com",
+    "open.bigmodel.cn",
+    "openrouter.ai",
+    "server.codeium.com",
+    "us-west-1.api.x.ai",
+]
+PYTHON_PACKAGE_HOSTS = ["pypi.org", "files.pythonhosted.org"]
+JAVASCRIPT_PACKAGE_HOSTS = ["registry.npmjs.org", "registry.yarnpkg.com"]
+UBUNTU_PACKAGE_HOSTS = ["archive.ubuntu.com", "security.ubuntu.com"]
 
 logger = logging.getLogger(__name__)
 
@@ -504,7 +540,26 @@ class SWEBenchService(BenchmarkService):
         if (dataset or "default") in MULTIMODAL_DATASETS:
             resources = MULTIMODAL_REPO_RESOURCES.get(cast(str, task.get("repo", "")), MULTIMODAL_RESOURCES).model_copy()
 
+        setup_hosts: list[str] = []
+        pre_install = get_pre_install_commands(task["repo"], task["version"])
+        if pre_install and (
+            task["repo"] in ("django/django", "matplotlib/matplotlib")
+            or (task["repo"], task["version"]) == ("sphinx-doc/sphinx", "7.2")
+        ):
+            setup_hosts.extend(UBUNTU_PACKAGE_HOSTS)
+            if task["repo"] == "matplotlib/matplotlib":
+                setup_hosts.append("www.qhull.org")
+        evaluation_hosts = list(
+            JAVASCRIPT_PACKAGE_HOSTS if (dataset or "default") in MULTIMODAL_DATASETS else PYTHON_PACKAGE_HOSTS
+        )
+        if task_id == "openlayers__openlayers-14932":
+            evaluation_hosts.append("storage.googleapis.com")
         return RetrieveTaskResponse(
+            egress=BenchmarkEgressPlan(
+                setup_task=setup_hosts,
+                run=sorted(set(MODEL_EGRESS_HOSTS + setup_hosts + evaluation_hosts)),
+                evaluation=evaluation_hosts,
+            ),
             source=ImageSource(image=docker_image),
             problem_path=PROBLEM_STATEMENT_PATH,
             cwd="/testbed",
