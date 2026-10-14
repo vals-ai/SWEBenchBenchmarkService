@@ -2,7 +2,6 @@ import asyncio
 import base64
 from collections.abc import AsyncGenerator, Mapping
 import re
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -26,12 +25,10 @@ from swebench_service.schemas import EvaluationResult
 
 class FakeSandbox(Sandbox):
     def __init__(self) -> None:
-        self._sandbox = SimpleNamespace(
-            labels={
-                "Id": "00000000-0000-0000-0000-000000000001",
-                "Benchmark": "swebench",
-            }
-        )
+        self.labels = {
+            "Id": "00000000-0000-0000-0000-000000000001",
+            "Benchmark": "swebench",
+        }
         self.uploads: dict[str, bytes] = {}
         self.commands: list[tuple[str, str | None]] = []
 
