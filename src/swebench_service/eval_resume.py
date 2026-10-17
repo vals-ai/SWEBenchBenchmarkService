@@ -106,8 +106,8 @@ async def persist_prediction(
     task_contract_sha256: str,
 ) -> EvalResumeState:
     """Persist the exact generated patch before evaluation begins."""
-    labels = _sandbox_labels(sandbox)
-    benchmark_id = labels.get("Id", "").strip()
+    labels = sandbox.labels
+    benchmark_id = labels.get("Id", "").strip() if labels is not None else ""
     if not benchmark_id:
         raise RuntimeError(f"SWE-bench sandbox {sandbox.id} is missing Valkyrie run label 'Id'")
     benchmark_uuid = UUID(benchmark_id)
@@ -134,15 +134,6 @@ async def load_prediction(state: EvalResumeState) -> bytes:
     if actual_sha256 != state.prediction_sha256:
         raise ValueError("Persisted SWE-bench prediction failed its SHA-256 integrity check")
     return content
-
-
-def _sandbox_labels(sandbox: Sandbox) -> dict[str, str]:
-    inner = getattr(sandbox, "_sandbox", None)
-    labels = getattr(inner, "labels", None)
-    if not isinstance(labels, dict):
-        return {}
-    raw_labels = cast(dict[object, object], labels)
-    return {key: value for key, value in raw_labels.items() if isinstance(key, str) and isinstance(value, str)}
 
 
 def _local_root() -> Path | None:
