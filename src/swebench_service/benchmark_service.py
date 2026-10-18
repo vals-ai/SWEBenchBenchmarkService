@@ -2,21 +2,21 @@
 
 import asyncio
 import contextlib
-import ipaddress
 import hashlib
+import ipaddress
 import json
-import re
 import logging
+import re
 import shlex
 import socket
 import time
-from urllib.parse import SplitResult, urlsplit, urlunsplit
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import SplitResult, urlsplit, urlunsplit
 from uuid import uuid4
 
-from benchmark_service import BenchmarkService
+import httpx
 from benchmark_service.sandbox import (
     ExecResult,
     ImageSource,
@@ -37,8 +37,7 @@ from benchmark_service.schemas import (
     StreamMessageChunk,
     StreamResultChunk,
 )
-import httpx
-
+from benchmark_service.vals import ValsBenchmarkService as BenchmarkService
 from swebench.harness.constants import TESTS_TIMEOUT
 
 from swebench_service import (
@@ -62,10 +61,10 @@ from swebench_service import (
     task_row_summary,
     test_patch_assets,
 )
+from swebench_service.eval_resume import MAX_PREDICTION_BYTES, EvalResumeState, load_prediction, persist_prediction
 from swebench_service.evaluation import clean_pty_stream
 from swebench_service.schemas import EvaluationResult
 from swebench_service.test_spec import TestSpec
-from swebench_service.eval_resume import MAX_PREDICTION_BYTES, EvalResumeState, load_prediction, persist_prediction
 from swebench_service.utils import with_retry
 
 # Temporary model access preserves historical agents during migration.
